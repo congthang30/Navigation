@@ -145,8 +145,30 @@ namespace Vps.UnityClient.Navigation
         {
             if (initialized) return;
 
-            uiFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            if (uiFont == null) uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            uiFont = null;
+            try
+            {
+                uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            }
+            catch {}
+            if (uiFont == null)
+            {
+                try
+                {
+                    uiFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                }
+                catch {}
+            }
+
+            GUISkin activeSkin = null;
+            try
+            {
+                activeSkin = GUI.skin;
+            }
+            catch {}
+            GUIStyle baseTextField = activeSkin != null ? activeSkin.textField : GUIStyle.none;
+            GUIStyle baseSlider = activeSkin != null ? activeSkin.horizontalSlider : GUIStyle.none;
+            GUIStyle baseThumb = activeSkin != null ? activeSkin.horizontalSliderThumb : GUIStyle.none;
 
             // Modern color palette (Slate, Cyan, Rose)
             Color darkGlass = NavigationUiPalette.DarkGlass;
@@ -254,8 +276,8 @@ namespace Vps.UnityClient.Navigation
             Texture2D texLightCard = CreateRoundedTexture(64, 64, 16, NavigationUiPalette.LightSurface, lightBorder, 1.0f);
             Texture2D texLightCardPressed = CreateRoundedTexture(64, 64, 16, NavigationUiPalette.LightSurfacePressed, lightBorder, 1.0f);
             Texture2D texLightCardSelected = CreateRoundedTexture(64, 64, 16, NavigationUiPalette.LightSurfaceHover, brandBlue, 1.8f);
-            Texture2D texLightSliderTrack = CreateRoundedTexture(64, 16, 8, NavigationUiPalette.LightSurfacePressed, lightBorder, 1.0f);
-            Texture2D texLightSliderThumb = CreateRoundedTexture(32, 32, 16, brandBlue, Color.white, 2.0f);
+            Texture2D texLightSliderTrack = CreateCenteredSliderTrackTexture(64, 24, 8, NavigationUiPalette.LightSurfacePressed, lightBorder, 1.0f);
+            Texture2D texLightSliderThumb = CreateRoundedTexture(32, 32, 15, brandBlue, Color.white, 2.5f);
 
             var border16 = new RectOffset(16, 16, 16, 16);
             var border22 = new RectOffset(22, 22, 22, 22);
@@ -357,7 +379,7 @@ namespace Vps.UnityClient.Navigation
                 padding = new RectOffset(18, 18, 14, 14)
             };
 
-            SearchFieldStyle = new GUIStyle(GUI.skin.textField)
+            SearchFieldStyle = new GUIStyle(baseTextField)
             {
                 normal = { background = texInset, textColor = textWhite },
                 focused = { background = texCardNorm, textColor = textWhite },
@@ -613,7 +635,7 @@ namespace Vps.UnityClient.Navigation
             LightDangerStyle = new GUIStyle(LightBodyStyle);
             LightDangerStyle.normal.textColor = new Color(0.72f, 0.16f, 0.20f, 1f);
 
-            LightSearchFieldStyle = new GUIStyle(GUI.skin.textField)
+            LightSearchFieldStyle = new GUIStyle(baseTextField)
             {
                 normal = { background = texSearchPill, textColor = ink },
                 focused = { background = texSearchPill, textColor = ink },
@@ -625,21 +647,25 @@ namespace Vps.UnityClient.Navigation
                 alignment = TextAnchor.MiddleLeft
             };
 
-            LightSliderStyle = new GUIStyle(GUI.skin.horizontalSlider)
+            LightSliderStyle = new GUIStyle(baseSlider)
             {
                 normal = { background = texLightSliderTrack },
                 hover = { background = texLightSliderTrack },
                 active = { background = texLightSliderTrack },
-                border = new RectOffset(8, 8, 5, 5),
-                fixedHeight = 12f
+                border = new RectOffset(8, 8, 0, 0),
+                padding = new RectOffset(0, 0, 0, 0),
+                margin = new RectOffset(0, 0, 0, 0),
+                fixedHeight = 24f
             };
 
-            LightSliderThumbStyle = new GUIStyle(GUI.skin.horizontalSliderThumb)
+            LightSliderThumbStyle = new GUIStyle(baseThumb)
             {
                 normal = { background = texLightSliderThumb },
                 hover = { background = texLightSliderThumb },
                 active = { background = texLightSliderThumb },
-                border = new RectOffset(16, 16, 16, 16),
+                border = new RectOffset(8, 8, 8, 8),
+                padding = new RectOffset(0, 0, 0, 0),
+                margin = new RectOffset(0, 0, 0, 0),
                 fixedWidth = 24f,
                 fixedHeight = 24f
             };
@@ -649,7 +675,7 @@ namespace Vps.UnityClient.Navigation
                 normal = { background = texCircleClose, textColor = ink },
                 hover = { background = texLightCardSelected, textColor = ink },
                 active = { background = texLightCardSelected, textColor = ink },
-                border = new RectOffset(30, 30, 30, 30),
+                border = new RectOffset(16, 16, 16, 16),
                 alignment = TextAnchor.MiddleCenter
             };
 
@@ -680,7 +706,7 @@ namespace Vps.UnityClient.Navigation
                 hover = { background = texPillBlueHover, textColor = Color.white },
                 active = { background = texPillBluePressed, textColor = Color.white },
                 focused = { background = texPillBlue, textColor = Color.white },
-                border = new RectOffset(28, 28, 28, 28),
+                border = new RectOffset(16, 16, 16, 16),
                 font = uiFont,
                 fontSize = 19,
                 fontStyle = FontStyle.Bold,
@@ -693,7 +719,7 @@ namespace Vps.UnityClient.Navigation
                 hover = { background = texPillRedHover, textColor = Color.white },
                 active = { background = texPillRedPressed, textColor = Color.white },
                 focused = { background = texPillRed, textColor = Color.white },
-                border = new RectOffset(28, 28, 28, 28),
+                border = new RectOffset(16, 16, 16, 16),
                 font = uiFont,
                 fontSize = 18,
                 fontStyle = FontStyle.Bold,
@@ -1609,6 +1635,59 @@ namespace Vps.UnityClient.Navigation
                         float d = Mathf.Min(Mathf.Min(d1, d2), Mathf.Min(d3, d4));
                         float alpha = Mathf.Clamp01(d + 0.5f);
                         tex.SetPixel(x, y, new Color(color.r, color.g, color.b, color.a * alpha));
+                    }
+                }
+            }
+            tex.Apply();
+            return tex;
+        }
+
+        private static Texture2D CreateCenteredSliderTrackTexture(int width, int totalHeight, int trackHeight, Color fill, Color border, float borderWidth)
+        {
+            Texture2D tex = new Texture2D(width, totalHeight, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            Color transparent = new Color(0, 0, 0, 0);
+
+            float trackStartY = (totalHeight - trackHeight) * 0.5f;
+            float trackEndY = trackStartY + trackHeight;
+            int radius = trackHeight / 2;
+
+            for (int y = 0; y < totalHeight; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (y < trackStartY || y >= trackEndY)
+                    {
+                        tex.SetPixel(x, y, transparent);
+                        continue;
+                    }
+
+                    float relY = y - trackStartY;
+                    int cx = x < radius ? radius : (x > width - radius - 1 ? width - radius - 1 : x);
+                    int cy = relY < radius ? radius : (relY > trackHeight - radius - 1 ? trackHeight - radius - 1 : (int)relY);
+                    float dist = Vector2.Distance(new Vector2(x, relY), new Vector2(cx, cy));
+
+                    if (dist > radius)
+                    {
+                        tex.SetPixel(x, y, transparent);
+                    }
+                    else
+                    {
+                        float edgeDist = radius - dist;
+                        float alpha = Mathf.Clamp01(edgeDist);
+
+                        Color c;
+                        if (borderWidth > 0.01f && dist >= radius - borderWidth)
+                        {
+                            float borderFactor = Mathf.Clamp01((dist - (radius - borderWidth)) / 1.0f);
+                            c = Color.Lerp(fill, border, borderFactor);
+                        }
+                        else
+                        {
+                            c = fill;
+                        }
+
+                        tex.SetPixel(x, y, new Color(c.r, c.g, c.b, c.a * alpha));
                     }
                 }
             }

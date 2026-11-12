@@ -38,7 +38,9 @@ namespace Vps.UnityClient.Editor
 
                 try
                 {
-                    string altPath = "/home/congthang/Downloads/VPS/apps/unity-client/Builds/vps-standalone-navigation.apk";
+                    string altPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(Application.dataPath, "../Builds/vps-standalone-navigation.apk"));
+                    string dir = System.IO.Path.GetDirectoryName(altPath);
+                    if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
                     if (outputPath != altPath && System.IO.File.Exists(outputPath))
                     {
                         System.IO.File.Copy(outputPath, altPath, true);

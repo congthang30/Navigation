@@ -107,6 +107,7 @@ namespace Vps.UnityClient.Authoring
         private RouteCaptureBuilder captureBuilder;
         private WalkCaptureDocument previewCapture;
         private bool recorderUiStylesReady;
+        private float recorderUiStyleScale = -1f;
         private float nextDiagnosticsSnapshotAt;
         private string lastDiagnosticsSnapshot = string.Empty;
         private Font recorderUiFont;
@@ -152,6 +153,7 @@ namespace Vps.UnityClient.Authoring
         private GUIStyle recorderPoiStyle;
         private GUIStyle recorderCategoryStyle;
         private GUIStyle recorderSelectionStyle;
+        private GUIStyle recorderSelectionSelectedStyle;
         private GUIStyle recorderCameraPanelStyle;
         private GUIStyle recorderOverlaySurfaceStyle;
         private GUIStyle recorderOverlayMetricCardStyle;
@@ -831,11 +833,14 @@ namespace Vps.UnityClient.Authoring
 
         private void EnsureRecorderUiStyles()
         {
-            if (recorderUiStylesReady) return;
+            float styleScale = GetRecorderUiScale();
+            if (recorderUiStylesReady && Mathf.Approximately(recorderUiStyleScale, styleScale)) return;
+            if (recorderUiStylesReady) ReleaseRecorderUiTextures();
+            recorderUiStylesReady = false;
+
             Color ink = NavigationUiPalette.TextOnLight;
             Color muted = NavigationUiPalette.MutedOnLight;
             Color white = NavigationUiPalette.TextOnDark;
-            int uiScale = Mathf.RoundToInt(GetRecorderUiScale());
             recorderUiFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
             if (recorderUiFont == null) recorderUiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             recorderPanelTexture = CreateRoundedTexture(NavigationUiPalette.LightSurface, 9, NavigationUiPalette.LightBorder, 0.7f);
@@ -864,7 +869,7 @@ namespace Vps.UnityClient.Authoring
 
             recorderPanelStyle = new GUIStyle(GUI.skin.box);
             SetStyleBackground(recorderPanelStyle, recorderPanelTexture);
-            recorderPanelStyle.padding = new RectOffset(20 * uiScale, 20 * uiScale, 18 * uiScale, 18 * uiScale);
+            recorderPanelStyle.padding = new RectOffset(ScaleUiPixels(20f, styleScale), ScaleUiPixels(20f, styleScale), ScaleUiPixels(18f, styleScale), ScaleUiPixels(18f, styleScale));
             recorderPanelStyle.border = new RectOffset(9, 9, 9, 9);
 
             recorderTitleStyle = CreateRecorderTextStyle(20, FontStyle.Bold, ink, TextAnchor.MiddleLeft);
@@ -883,7 +888,7 @@ namespace Vps.UnityClient.Authoring
             recorderMetricStyle = CreateRecorderTextStyle(10, FontStyle.Bold, muted, TextAnchor.MiddleCenter);
             recorderSurfaceStyle = new GUIStyle(GUI.skin.box);
             SetStyleBackground(recorderSurfaceStyle, recorderSurfaceTexture);
-            recorderSurfaceStyle.padding = new RectOffset(14 * uiScale, 14 * uiScale, 12 * uiScale, 12 * uiScale);
+            recorderSurfaceStyle.padding = new RectOffset(ScaleUiPixels(14f, styleScale), ScaleUiPixels(14f, styleScale), ScaleUiPixels(12f, styleScale), ScaleUiPixels(12f, styleScale));
             recorderSurfaceStyle.border = new RectOffset(8, 8, 8, 8);
             recorderMetricCardStyle = new GUIStyle(GUI.skin.box);
             SetStyleBackground(recorderMetricCardStyle, recorderMetricCardTexture);
@@ -902,7 +907,7 @@ namespace Vps.UnityClient.Authoring
             recorderInputStyle.normal.textColor = ink;
             recorderInputStyle.focused.textColor = ink;
             recorderInputStyle.fontSize = Mathf.RoundToInt(15f * GetRecorderUiScale());
-            recorderInputStyle.padding = new RectOffset(12 * uiScale, 12 * uiScale, 8 * uiScale, 8 * uiScale);
+            recorderInputStyle.padding = new RectOffset(ScaleUiPixels(12f, styleScale), ScaleUiPixels(12f, styleScale), ScaleUiPixels(8f, styleScale), ScaleUiPixels(8f, styleScale));
             recorderMapCaptionStyle = CreateRecorderTextStyle(12, FontStyle.Normal, muted, TextAnchor.MiddleLeft);
             recorderMapEmptyStyle = CreateRecorderTextStyle(14, FontStyle.Normal, muted, TextAnchor.MiddleCenter);
             recorderPoiStyle = CreateRecorderTextStyle(11, FontStyle.Bold, ink, TextAnchor.MiddleLeft);
@@ -930,7 +935,7 @@ namespace Vps.UnityClient.Authoring
             recorderOverlayInputStyle.hover.textColor = NavigationUiPalette.TextOnDark;
             recorderOverlayInputStyle.focused.textColor = NavigationUiPalette.TextOnDark;
             recorderOverlayInputStyle.active.textColor = NavigationUiPalette.TextOnDark;
-            recorderOverlayInputStyle.padding = new RectOffset(12 * uiScale, 12 * uiScale, 8 * uiScale, 8 * uiScale);
+            recorderOverlayInputStyle.padding = new RectOffset(ScaleUiPixels(12f, styleScale), ScaleUiPixels(12f, styleScale), ScaleUiPixels(8f, styleScale), ScaleUiPixels(8f, styleScale));
 
             recorderCameraPanelStyle = new GUIStyle(GUI.skin.box);
             SetStyleBackground(recorderCameraPanelStyle, recorderCameraPanelTexture);
@@ -966,16 +971,88 @@ namespace Vps.UnityClient.Authoring
             recorderCategoryStyle.fontSize = Mathf.RoundToInt(10f * GetRecorderUiScale());
             recorderCategoryStyle.fontStyle = FontStyle.Bold;
             recorderCategoryStyle.alignment = TextAnchor.MiddleCenter;
-            recorderCategoryStyle.padding = new RectOffset(4 * uiScale, 4 * uiScale, 2 * uiScale, 2 * uiScale);
+            recorderCategoryStyle.padding = new RectOffset(ScaleUiPixels(6f, styleScale), ScaleUiPixels(6f, styleScale), ScaleUiPixels(3f, styleScale), ScaleUiPixels(3f, styleScale));
             recorderCategoryStyle.border = new RectOffset(8, 8, 8, 8);
 
-            recorderSelectionStyle = new GUIStyle(recorderCategoryStyle)
-            {
-                fontSize = Mathf.RoundToInt(14f * GetRecorderUiScale()),
-                alignment = TextAnchor.MiddleLeft,
-                padding = new RectOffset(14 * uiScale, 12 * uiScale, 8 * uiScale, 8 * uiScale)
-            };
+            recorderSelectionStyle = CreateRecorderOptionStyle(false, styleScale);
+            recorderSelectionSelectedStyle = CreateRecorderOptionStyle(true, styleScale);
+            recorderUiStyleScale = styleScale;
             recorderUiStylesReady = true;
+        }
+
+        private GUIStyle CreateRecorderOptionStyle(bool selected, float scale)
+        {
+            GUIStyle style = new GUIStyle(GUI.skin.button)
+            {
+                font = recorderUiFont,
+                fontSize = Mathf.RoundToInt(15f * scale),
+                fontStyle = selected ? FontStyle.Bold : FontStyle.Normal,
+                alignment = TextAnchor.MiddleLeft,
+                wordWrap = true,
+                clipping = TextClipping.Clip,
+                padding = new RectOffset(
+                    ScaleUiPixels(14f, scale),
+                    ScaleUiPixels(12f, scale),
+                    ScaleUiPixels(5f, scale),
+                    ScaleUiPixels(5f, scale)),
+                margin = new RectOffset(0, 0, 0, 0),
+                border = new RectOffset(8, 8, 8, 8)
+            };
+
+            if (selected)
+            {
+                SetStyleBackground(style, recorderPrimaryTexture);
+                style.hover.background = recorderPrimaryHoverTexture;
+                style.active.background = recorderPrimaryActiveTexture;
+                style.focused.background = recorderPrimaryTexture;
+                SetRecorderOptionTextColor(style, NavigationUiPalette.TextOnDark);
+            }
+            else
+            {
+                SetStyleBackground(style, recorderSurfaceTexture);
+                style.hover.background = recorderSecondaryHoverTexture;
+                style.active.background = recorderSecondaryActiveTexture;
+                style.focused.background = recorderSecondaryHoverTexture;
+                SetRecorderOptionTextColor(style, NavigationUiPalette.TextOnLight);
+            }
+
+            return style;
+        }
+
+        private static void SetRecorderOptionTextColor(GUIStyle style, Color color)
+        {
+            style.normal.textColor = color;
+            style.hover.textColor = color;
+            style.active.textColor = color;
+            style.focused.textColor = color;
+            style.onNormal.textColor = color;
+            style.onHover.textColor = color;
+            style.onActive.textColor = color;
+            style.onFocused.textColor = color;
+        }
+
+        private static int ScaleUiPixels(float pixels, float scale)
+        {
+            return Mathf.Max(0, Mathf.RoundToInt(pixels * scale));
+        }
+
+        private int DrawRecorderOptionList(string[] labels, int selectedIndex, float scale)
+        {
+            if (labels == null || labels.Length == 0) return -1;
+
+            int nextIndex = selectedIndex;
+            float rowHeight = 46f * scale;
+            float rowGap = 5f * scale;
+            for (int index = 0; index < labels.Length; index++)
+            {
+                GUIStyle rowStyle = index == selectedIndex ? recorderSelectionSelectedStyle : recorderSelectionStyle;
+                string label = string.IsNullOrWhiteSpace(labels[index]) ? "Chưa đặt tên" : labels[index];
+                if (GUILayout.Button(label, rowStyle, GUILayout.MinHeight(rowHeight), GUILayout.ExpandWidth(true)))
+                    nextIndex = index;
+                if (index < labels.Length - 1) GUILayout.Space(rowGap);
+            }
+
+            return nextIndex;
         }
 
         private float GetRecorderUiScale()
@@ -1004,7 +1081,7 @@ namespace Vps.UnityClient.Authoring
             Texture2D activeBackground = null,
             int borderPixels = 20)
         {
-            int scale = Mathf.RoundToInt(GetRecorderUiScale());
+            float scale = GetRecorderUiScale();
             GUIStyle style = new GUIStyle(GUI.skin.button);
             SetStyleBackground(style, background);
             style.font = recorderUiFont;
@@ -1014,7 +1091,13 @@ namespace Vps.UnityClient.Authoring
             style.fontSize = Mathf.RoundToInt(18f * GetRecorderUiScale());
             style.fontStyle = FontStyle.Bold;
             style.alignment = TextAnchor.MiddleCenter;
-            style.padding = new RectOffset(12 * scale, 12 * scale, 8 * scale, 8 * scale);
+            style.wordWrap = true;
+            style.clipping = TextClipping.Clip;
+            style.padding = new RectOffset(
+                ScaleUiPixels(12f, scale),
+                ScaleUiPixels(12f, scale),
+                ScaleUiPixels(6f, scale),
+                ScaleUiPixels(6f, scale));
             style.border = new RectOffset(borderPixels, borderPixels, borderPixels, borderPixels);
             style.normal.textColor = textColor;
             style.hover.textColor = textColor;
@@ -1390,7 +1473,7 @@ namespace Vps.UnityClient.Authoring
                 for (int index = 0; index < organizations.Length; index++)
                     organizationLabels[index] = string.IsNullOrWhiteSpace(organizations[index].Name) ? organizations[index].Id : organizations[index].Name;
                 GUILayout.Label("Tổ chức", recorderMetaStyle);
-                int nextOrganization = GUILayout.SelectionGrid(selectedOrganizationIndex, organizationLabels, 1, recorderSelectionStyle, GUILayout.Height(organizationLabels.Length * 46f * GetRecorderUiScale()));
+                int nextOrganization = DrawRecorderOptionList(organizationLabels, selectedOrganizationIndex, GetRecorderUiScale());
                 if (nextOrganization != selectedOrganizationIndex)
                 {
                     selectedOrganizationIndex = nextOrganization;
@@ -1416,7 +1499,7 @@ namespace Vps.UnityClient.Authoring
                     for (int index = 0; index < sites.Length; index++)
                         siteLabels[index] = string.IsNullOrWhiteSpace(sites[index].Name) ? sites[index].Id : sites[index].Name;
                     GUILayout.Label("Site", recorderMetaStyle);
-                    int nextSite = GUILayout.SelectionGrid(selectedSiteIndex, siteLabels, 1, recorderSelectionStyle, GUILayout.Height(siteLabels.Length * 46f * GetRecorderUiScale()));
+                    int nextSite = DrawRecorderOptionList(siteLabels, selectedSiteIndex, GetRecorderUiScale());
                     if (nextSite != selectedSiteIndex)
                     {
                         selectedSiteIndex = nextSite;
@@ -1438,7 +1521,7 @@ namespace Vps.UnityClient.Authoring
                         for (int index = 0; index < productionAssets.Length; index++)
                             assetLabels[index] = string.IsNullOrWhiteSpace(productionAssets[index].Name) ? productionAssets[index].Id : productionAssets[index].Name;
                         GUILayout.Label("VPS asset Production", recorderMetaStyle);
-                        int nextAsset = GUILayout.SelectionGrid(selectedAssetIndex, assetLabels, 1, recorderSelectionStyle, GUILayout.Height(assetLabels.Length * 46f * GetRecorderUiScale()));
+                        int nextAsset = DrawRecorderOptionList(assetLabels, selectedAssetIndex, GetRecorderUiScale());
                         if (nextAsset != selectedAssetIndex)
                         {
                             selectedAssetIndex = nextAsset;
@@ -1513,7 +1596,7 @@ namespace Vps.UnityClient.Authoring
 
             GUILayout.Label("Tầng", recorderMetaStyle);
             GUI.enabled = string.IsNullOrEmpty(pendingCaptureJson) || string.IsNullOrEmpty(pendingFloorId);
-            int nextFloor = GUILayout.SelectionGrid(selectedFloorIndex, floorLabels, 1, recorderSelectionStyle, GUILayout.Height(floorLabels.Length * 46f * scale));
+            int nextFloor = DrawRecorderOptionList(floorLabels, selectedFloorIndex, scale);
             GUI.enabled = true;
             if (nextFloor >= 0 && nextFloor < selectableFloors.Length && nextFloor != selectedFloorIndex)
             {

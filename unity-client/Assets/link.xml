@@ -1,5 +1,25 @@
 <linker>
+  <assembly fullname="Vps.UnityClient">
+    <!-- Public fields are accessed by Unity JsonUtility or Newtonsoft.Json via reflection. -->
+    <type fullname="Vps.UnityClient.Api.AdminLoginRequest" preserve="fields" />
+    <type fullname="Vps.UnityClient.Api.DeviceChallengeProof" preserve="fields" />
+    <type fullname="Vps.UnityClient.Api.GuestChallengeRequest" preserve="fields" />
+    <type fullname="Vps.UnityClient.Api.NianticAccessTokenResponse" preserve="fields" />
+    <type fullname="Vps.UnityClient.Api.RecordableFloorListResponse" preserve="fields" />
+    <type fullname="Vps.UnityClient.Api.RecordableFloorOption" preserve="fields" />
+
+    <type fullname="Vps.UnityClient.RouteCapture.AnchorLocalPointDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.CapturedJunctionMarkerDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.CapturedPoiMarkerDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.PendingRouteCaptureQueueDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.RouteSampleDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.SiteMeshUploadDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.TrackingSegmentDocument" preserve="fields" />
+    <type fullname="Vps.UnityClient.RouteCapture.WalkCaptureDocument" preserve="fields" />
+  </assembly>
+
   <assembly fullname="mscorlib">
+    <!-- RandomNumberGenerator.Create and SHA256.Create select concrete providers at runtime. -->
     <namespace fullname="System.Security.Cryptography" preserve="all" />
   </assembly>
 </linker>

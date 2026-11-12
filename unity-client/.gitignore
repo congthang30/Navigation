@@ -53,6 +53,10 @@ ExportedObj/
 # Unity3D generated file on crash reports
 sysinfo.txt
 
+# Test results
+test-results.xml
+*-results.xml
+
 # Mono auto generated files
 .dirstamp
 mono_crash.*

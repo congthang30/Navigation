@@ -25,3 +25,4 @@ unity-client/[Ll]ogs/
 unity-client/[Uu]ser[Ss]ettings/
 unity-client/.utmp/
 unity-client/mono_crash.*
+unity-client/*-results.xml

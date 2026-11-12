@@ -12,7 +12,7 @@ namespace Vps.UnityClient.Navigation
     {
         public const float DefaultScale = 0.25f;
         public const float DefaultGroundDrop = 0.08f;
-        public const float DefaultLeadDistance = 1.3f;
+        public const float DefaultLeadDistance = 1.8f;
         public const float DefaultWalkSpeed = 1.3f;
         public const float DefaultModelBrightness = 0.75f;
         public const float OffRouteRerouteThresholdM = 3.5f;
@@ -82,7 +82,7 @@ namespace Vps.UnityClient.Navigation
         public float LeadDistance
         {
             get => leadDistance;
-            set => leadDistance = Mathf.Clamp(value, 0.8f, 3.0f);
+            set => leadDistance = Mathf.Clamp(value, 1.2f, 3.0f);
         }
 
         /// <summary>Scale multiplier applied after the model is normalized to navigation height.</summary>
@@ -127,11 +127,25 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        public GameObject CompanionInstance => doraemonInstance;
+        public Light CompanionLight => doraemonInstance != null ? doraemonInstance.GetComponentInChildren<Light>(true) : null;
+
         public void Initialize(Transform anchor, Camera camera)
         {
             trackedAnchor = anchor;
             arCamera = camera;
             EnsureDoraemonModel();
+            if (doraemonInstance != null)
+            {
+                if (trackedAnchor != null && doraemonInstance.transform.parent != trackedAnchor)
+                {
+                    doraemonInstance.transform.SetParent(trackedAnchor, false);
+                }
+                else if (trackedAnchor == null && doraemonInstance.transform.parent == null)
+                {
+                    doraemonInstance.transform.SetParent(transform, false);
+                }
+            }
         }
 
         public void SetRoute(Vector3[] anchorLocalPoints)
@@ -529,7 +543,7 @@ namespace Vps.UnityClient.Navigation
                 doraemonInstance = Instantiate(prefab);
                 doraemonInstance.name = "Navigation Companion";
 
-                // Auto-scale to normalize companion height to ~0.55m
+                // Auto-scale to normalize companion height to ~0.42m (compact AR companion)
                 Renderer[] rs = doraemonInstance.GetComponentsInChildren<Renderer>(true);
                 if (rs.Length > 0)
                 {
@@ -538,7 +552,7 @@ namespace Vps.UnityClient.Navigation
                     float currentHeight = b.size.y;
                     if (currentHeight > 0.05f)
                     {
-                        float scaleFactor = 0.55f / currentHeight;
+                        float scaleFactor = 0.42f / currentHeight;
                         doraemonInstance.transform.localScale = Vector3.one * scaleFactor;
                     }
                     else
@@ -575,9 +589,27 @@ namespace Vps.UnityClient.Navigation
                 ApplyModelScale();
             }
 
+            // Ensure dedicated soft directional light exists on companion in AR scene
+            var existingLight = doraemonInstance.GetComponentInChildren<Light>(true);
+            if (existingLight == null)
+            {
+                GameObject lightObj = new GameObject("Companion DirectLight");
+                lightObj.transform.SetParent(doraemonInstance.transform, false);
+                lightObj.transform.localPosition = new Vector3(0f, 1.5f, -1.0f);
+                lightObj.transform.localRotation = Quaternion.Euler(45f, 20f, 0f);
+                Light compLight = lightObj.AddComponent<Light>();
+                compLight.type = LightType.Directional;
+                compLight.color = new Color(1.0f, 0.98f, 0.95f, 1.0f);
+                compLight.intensity = 0.85f;
+            }
+
             if (trackedAnchor != null)
             {
                 doraemonInstance.transform.SetParent(trackedAnchor, false);
+            }
+            else
+            {
+                doraemonInstance.transform.SetParent(transform, false);
             }
 
             ConfigureRenderersForDepthOcclusion();
@@ -668,6 +700,7 @@ namespace Vps.UnityClient.Navigation
 
         private void ApplyModelBrightness()
         {
+            float effectiveBrightness = Mathf.Max(0.20f, modelBrightness);
             for (int i = 0; i < brightnessMaterials.Count; i++)
             {
                 MaterialBrightnessState state = brightnessMaterials[i];
@@ -676,22 +709,14 @@ namespace Vps.UnityClient.Navigation
 
                 if (material.HasProperty(EmissionColorPropertyId))
                 {
-                    if (modelBrightness > 0f)
-                    {
-                        material.EnableKeyword("_EMISSION");
-                        Color tint = state.HasBaseColor ? state.BaseColor : Color.white;
-                        material.SetColor(EmissionColorPropertyId, state.EmissionColor + tint * modelBrightness);
-                    }
-                    else
-                    {
-                        material.SetColor(EmissionColorPropertyId, state.EmissionColor);
-                        if (!state.HadEmissionKeyword) material.DisableKeyword("_EMISSION");
-                    }
+                    material.EnableKeyword("_EMISSION");
+                    Color tint = state.HasBaseColor ? state.BaseColor : Color.white;
+                    material.SetColor(EmissionColorPropertyId, state.EmissionColor + tint * effectiveBrightness);
                 }
                 else if (state.HasBaseColor)
                 {
                     int propertyId = material.HasProperty(BaseColorPropertyId) ? BaseColorPropertyId : ColorPropertyId;
-                    float lift = 1f + modelBrightness * 0.25f;
+                    float lift = 1f + effectiveBrightness * 0.25f;
                     Color color = state.BaseColor * lift;
                     color.a = state.BaseColor.a;
                     material.SetColor(propertyId, color);

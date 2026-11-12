@@ -296,12 +296,19 @@ namespace Vps.UnityClient.Navigation
                 companionHeight);
             GUI.Box(companionCard, GUIContent.none, theme.LightDockCardStyle);
             GUI.DrawTexture(new Rect(companionCard.x + 18f, companionCard.y + 26f, 48f, 48f), theme.IconCompanion, ScaleMode.ScaleToFit);
-            GUI.Label(new Rect(companionCard.x + 78f, companionCard.y + 18f, companionCard.width - 190f, 22f), "ROBOT DẪN ĐƯỜNG", theme.LightEyebrowStyle);
+
+            bool isArrived = companionGuide != null && companionGuide.IsAtDestination;
+            float textAvailableWidth = isArrived ? companionCard.width - 210f : companionCard.width - 96f;
+            GUI.Label(new Rect(companionCard.x + 78f, companionCard.y + 18f, textAvailableWidth, 22f), "ROBOT DẪN ĐƯỜNG", theme.LightEyebrowStyle);
             string companionMessage = companionGuide != null ? companionGuide.CompanionStatusMessage : "Đi theo Robot và đường sáng trên sàn.";
-            GUI.Label(new Rect(companionCard.x + 78f, companionCard.y + 42f, companionCard.width - 190f, 50f), companionMessage, theme.LightBodyStyle);
-            Rect endNavigation = new Rect(companionCard.xMax - 106f, companionCard.y + 25f, 90f, 50f);
-            if (theme.DrawPillButton(endNavigation, null, "Kết thúc", theme.DangerPillButtonStyle, 0f))
-                StopNavigation();
+            GUI.Label(new Rect(companionCard.x + 78f, companionCard.y + 42f, textAvailableWidth, 50f), companionMessage, theme.LightBodyStyle);
+
+            if (isArrived)
+            {
+                Rect endNavigation = new Rect(companionCard.xMax - 116f, companionCard.y + 25f, 102f, 50f);
+                if (theme.DrawPillButton(endNavigation, theme.IconCheck, "Kết thúc", theme.PrimaryPillButtonStyle, 18f))
+                    StopNavigation();
+            }
         }
 
         private void DrawIdleOrSearchingUi()
@@ -452,7 +459,7 @@ namespace Vps.UnityClient.Navigation
             Rect viewport = new Rect(modalRect.x + padding, modalRect.y + 88f,
                 modalRect.width - padding * 2f, modalRect.height - 158f);
             float contentWidth = Mathf.Max(100f, viewport.width - 18f);
-            Rect contentRect = new Rect(0f, 0f, contentWidth, 1240f);
+            Rect contentRect = new Rect(0f, 0f, contentWidth, 1360f);
             settingsScrollPosition = GUI.BeginScrollView(viewport, settingsScrollPosition, contentRect);
             float y = 0f;
 
@@ -464,7 +471,7 @@ namespace Vps.UnityClient.Navigation
                 ApplyLineSettings();
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             string colorLabel = routeColorIndex >= 0 ? RouteColorNames[routeColorIndex] : "Tùy chỉnh";
             GUI.Label(new Rect(8f, y, contentWidth - 16f, 23f), "Màu tuyến · " + colorLabel, theme.LightCardTitleStyle);
@@ -482,7 +489,7 @@ namespace Vps.UnityClient.Navigation
                 ApplyLineSettings();
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             newValue = DrawSettingsSlider(contentWidth, y, "Độ mờ đường", routeLineOpacity, 0.25f, 1f, "0%");
             if (!Mathf.Approximately(newValue, routeLineOpacity))
@@ -493,7 +500,7 @@ namespace Vps.UnityClient.Navigation
                 ApplyLineSettings();
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             float depthBias = occlusionController != null ? occlusionController.RouteDepthBiasMeters : ArOcclusionController.DefaultRouteDepthBiasMeters;
             newValue = DrawSettingsSlider(contentWidth, y, "Bù độ sâu tuyến", depthBias, 0f, 0.35f, "0.00 m");
@@ -503,7 +510,7 @@ namespace Vps.UnityClient.Navigation
                 ApplyLineSettings();
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             DrawSettingsSection(ref y, contentWidth, "MODEL DẪN ĐƯỜNG");
             float modelScale = companionGuide != null ? companionGuide.ModelScaleMultiplier : 1f;
@@ -513,25 +520,25 @@ namespace Vps.UnityClient.Navigation
                 companionGuide.ModelScaleMultiplier = newValue;
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             float modelBrightness = companionGuide != null ? companionGuide.ModelBrightness : DoraemonCompanionGuide.DefaultModelBrightness;
-            newValue = DrawSettingsSlider(contentWidth, y, "Độ sáng model", modelBrightness, 0f, 2f, "0.00");
+            newValue = DrawSettingsSlider(contentWidth, y, "Độ sáng model", modelBrightness, 0.20f, 2f, "0.00");
             if (!Mathf.Approximately(newValue, modelBrightness) && companionGuide != null)
             {
                 companionGuide.ModelBrightness = newValue;
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             float leadDistance = companionGuide != null ? companionGuide.LeadDistance : DoraemonCompanionGuide.DefaultLeadDistance;
-            newValue = DrawSettingsSlider(contentWidth, y, "Cự ly dẫn trước", leadDistance, 0.8f, 3f, "0.00 m");
+            newValue = DrawSettingsSlider(contentWidth, y, "Cự ly dẫn trước", leadDistance, 1.4f, 3f, "0.00 m");
             if (!Mathf.Approximately(newValue, leadDistance) && companionGuide != null)
             {
                 companionGuide.LeadDistance = newValue;
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             float groundDrop = companionGuide != null ? companionGuide.GroundDropMeters : DoraemonCompanionGuide.DefaultGroundDrop;
             newValue = DrawSettingsSlider(contentWidth, y, "Độ hạ model", groundDrop, 0f, 0.4f, "0.00 m");
@@ -540,7 +547,7 @@ namespace Vps.UnityClient.Navigation
                 companionGuide.GroundDropMeters = newValue;
                 SaveUserSettings(false);
             }
-            y += 62f;
+            y += 68f;
 
             DrawSettingsSection(ref y, contentWidth, "DEPTH OCCLUSION");
             if (occlusionController != null)
@@ -594,7 +601,7 @@ namespace Vps.UnityClient.Navigation
                 : value.ToString("0.00", CultureInfo.InvariantCulture) + format.Replace("0.00", string.Empty);
             GUI.Label(new Rect(width - 92f, y, 84f, 24f), displayValue, theme.LightCardSubtitleStyle);
             return GUI.HorizontalSlider(
-                new Rect(8f, y + 26f, width - 16f, 32f),
+                new Rect(8f, y + 26f, width - 16f, 24f),
                 value,
                 min,
                 max,
