@@ -1,0 +1,26 @@
+{
+  "name": "Vps.UnityClient.LiveAuth.Tests",
+  "rootNamespace": "Vps.UnityClient.Tests.LiveAuth",
+  "references": [
+    "NianticSpatial.NSDK.AR",
+    "Unity.InputSystem",
+    "Unity.XR.ARFoundation",
+    "Unity.XR.ARSubsystems",
+    "Unity.XR.CoreUtils",
+    "Vps.UnityClient"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ],
+  "noEngineReferences": false
+}
