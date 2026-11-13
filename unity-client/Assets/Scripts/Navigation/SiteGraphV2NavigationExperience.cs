@@ -15,6 +15,7 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.XR;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using UnityEngine.UIElements;
 using Vps.UnityClient.Api;
 using Vps.UnityClient.Diagnostics;
 using Vps.UnityClient.Authoring;
@@ -100,6 +101,412 @@ namespace Vps.UnityClient.Navigation
         private Vector2 settingsScrollPosition;
         private string poiSearchQuery = string.Empty;
         private NianticAccessTokenProvider nianticAccessTokenProvider;
+
+        [Header("UI Presentation")]
+        [SerializeField] private bool useUiToolkit = true;
+        [SerializeField] private UIDocument uiDocument;
+        private NavigationUiToolkitController uiToolkitController;
+
+        public bool UseUiToolkit
+        {
+            get => useUiToolkit;
+            set => useUiToolkit = value;
+        }
+
+        public NavigationUiToolkitController UiToolkitController => uiToolkitController;
+        public static Color[] PaletteColors => RouteColorOptions;
+        public static string[] PaletteColorNames => RouteColorNames;
+        public static string Capitalize(string text) => CapitalizeFirst(text);
+        public static string FormatPoiCategory(string category) => GetPoiCategoryLabel(category);
+
+        public bool IsSitesBusy => sitesBusy;
+
+        public float RouteLineWidth
+        {
+            get => routeLineWidth;
+            set
+            {
+                routeLineWidth = Mathf.Clamp(value, 0.04f, 0.5f);
+                ApplyLineSettings();
+                SaveUserSettings(false);
+            }
+        }
+
+        public float RouteHue
+        {
+            get => routeHue;
+            set
+            {
+                routeHue = Mathf.Clamp01(value);
+                routeColorIndex = -1;
+                routeLineColor = Color.HSVToRGB(routeHue, 0.9f, 1f);
+                routeLineColor.a = routeLineOpacity;
+                ApplyLineSettings();
+                SaveUserSettings(false);
+            }
+        }
+
+        public int RouteColorIndex
+        {
+            get => routeColorIndex;
+            set
+            {
+                routeColorIndex = Mathf.Clamp(value, -1, RouteColorOptions.Length - 1);
+                if (routeColorIndex >= 0)
+                {
+                    Color.RGBToHSV(RouteColorOptions[routeColorIndex], out routeHue, out _, out _);
+                    routeLineColor = RouteColorOptions[routeColorIndex];
+                    routeLineColor.a = routeLineOpacity;
+                }
+                ApplyLineSettings();
+                SaveUserSettings(false);
+            }
+        }
+
+        public float RouteLineOpacity
+        {
+            get => routeLineOpacity;
+            set
+            {
+                routeLineOpacity = Mathf.Clamp(value, 0.25f, 1f);
+                routeLineColor.a = routeLineOpacity;
+                ApplyLineSettings();
+                SaveUserSettings(false);
+            }
+        }
+
+        private DoraemonCompanionGuide EnsureCompanionGuide()
+        {
+            if (companionGuide == null)
+            {
+                companionGuide = GetComponent<DoraemonCompanionGuide>();
+                if (companionGuide == null) companionGuide = gameObject.AddComponent<DoraemonCompanionGuide>();
+            }
+            return companionGuide;
+        }
+
+        private ArOcclusionController EnsureOcclusionController()
+        {
+            if (occlusionController == null)
+            {
+                occlusionController = GetComponent<ArOcclusionController>();
+                if (occlusionController == null) occlusionController = gameObject.AddComponent<ArOcclusionController>();
+            }
+            return occlusionController;
+        }
+
+        public float RouteDepthBias
+        {
+            get
+            {
+                var occ = EnsureOcclusionController();
+                return occ != null ? occ.RouteDepthBiasMeters : 0f;
+            }
+            set
+            {
+                var occ = EnsureOcclusionController();
+                if (occ != null)
+                {
+                    occ.RouteDepthBiasMeters = Mathf.Clamp(value, 0f, 0.35f);
+                    ApplyLineSettings();
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        public float CompanionModelScale
+        {
+            get
+            {
+                var guide = EnsureCompanionGuide();
+                return guide != null ? guide.ModelScaleMultiplier : 1f;
+            }
+            set
+            {
+                var guide = EnsureCompanionGuide();
+                if (guide != null)
+                {
+                    guide.ModelScaleMultiplier = Mathf.Clamp(value, 0.5f, 2f);
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        public float CompanionBrightness
+        {
+            get
+            {
+                var guide = EnsureCompanionGuide();
+                return guide != null ? guide.ModelBrightness : DoraemonCompanionGuide.DefaultModelBrightness;
+            }
+            set
+            {
+                var guide = EnsureCompanionGuide();
+                if (guide != null)
+                {
+                    guide.ModelBrightness = Mathf.Clamp(value, 0.2f, 2f);
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        public float CompanionLeadDistance
+        {
+            get
+            {
+                var guide = EnsureCompanionGuide();
+                return guide != null ? guide.LeadDistance : DoraemonCompanionGuide.DefaultLeadDistance;
+            }
+            set
+            {
+                var guide = EnsureCompanionGuide();
+                if (guide != null)
+                {
+                    guide.LeadDistance = Mathf.Clamp(value, 1.2f, 3f);
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        public float CompanionGroundDrop
+        {
+            get
+            {
+                var guide = EnsureCompanionGuide();
+                return guide != null ? guide.GroundDropMeters : DoraemonCompanionGuide.DefaultGroundDrop;
+            }
+            set
+            {
+                var guide = EnsureCompanionGuide();
+                if (guide != null)
+                {
+                    guide.GroundDropMeters = Mathf.Clamp(value, 0f, 0.4f);
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        public ArOcclusionQualityMode OcclusionMode
+        {
+            get
+            {
+                var occ = EnsureOcclusionController();
+                return occ != null ? occ.RequestedMode : ArOcclusionQualityMode.Off;
+            }
+            set
+            {
+                var occ = EnsureOcclusionController();
+                if (occ != null)
+                {
+                    occ.SetQualityMode(value);
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        public bool SmoothEdgesOcclusion
+        {
+            get
+            {
+                EnsureOcclusionController();
+                return GetOcclusionToggle(OcclusionToggle.SmoothEdges);
+            }
+            set
+            {
+                EnsureOcclusionController();
+                SetOcclusionToggle(OcclusionToggle.SmoothEdges, value);
+            }
+        }
+
+        public bool SemanticSuppressionOcclusion
+        {
+            get
+            {
+                EnsureOcclusionController();
+                return GetOcclusionToggle(OcclusionToggle.SemanticSuppression);
+            }
+            set
+            {
+                EnsureOcclusionController();
+                SetOcclusionToggle(OcclusionToggle.SemanticSuppression, value);
+            }
+        }
+
+        public bool SuppressGroundOcclusion
+        {
+            get
+            {
+                EnsureOcclusionController();
+                return GetOcclusionToggle(OcclusionToggle.SuppressGround);
+            }
+            set
+            {
+                EnsureOcclusionController();
+                SetOcclusionToggle(OcclusionToggle.SuppressGround, value);
+            }
+        }
+
+        public bool DepthVisualizationOcclusion
+        {
+            get
+            {
+                EnsureOcclusionController();
+                return GetOcclusionToggle(OcclusionToggle.DepthVisualization);
+            }
+            set
+            {
+                EnsureOcclusionController();
+                SetOcclusionToggle(OcclusionToggle.DepthVisualization, value);
+            }
+        }
+
+        public bool MeshDebugOcclusion
+        {
+            get
+            {
+                EnsureOcclusionController();
+                return GetOcclusionToggle(OcclusionToggle.MeshDebug);
+            }
+            set
+            {
+                EnsureOcclusionController();
+                SetOcclusionToggle(OcclusionToggle.MeshDebug, value);
+            }
+        }
+
+        public void OnBackButtonClicked()
+        {
+            if (trackingRequestAccepted) StopNavigation();
+            if (panelOpen)
+            {
+                panelOpen = false;
+                uiToolkitController?.CloseDestinationPickerModal();
+            }
+        }
+
+        public void OnOpenDestinationPickerClicked()
+        {
+            bool ready = bootstrap != null && bootstrap.State == NavigationBootstrapState.ManifestLoaded && activePois.Count > 0;
+            if (ready)
+            {
+                panelOpen = true;
+                poiSearchQuery = string.Empty;
+                RefreshPois();
+                uiToolkitController?.OpenDestinationPickerModal();
+                uiToolkitController?.PopulatePois(visiblePois, selectedPoiId);
+            }
+            else if (bootstrap != null)
+            {
+                bootstrap.Reload();
+            }
+        }
+
+        public void OnSearchQueryChanged(string query)
+        {
+            poiSearchQuery = query ?? string.Empty;
+            RebuildVisiblePois();
+            uiToolkitController?.PopulatePois(visiblePois, selectedPoiId);
+        }
+
+        public void OnPoiSelected(string poiId)
+        {
+            selectedPoiId = poiId;
+            VpsSystemDiagnostics.Record("INPUT", "destination row selected: " + poiId);
+            uiToolkitController?.PopulatePois(visiblePois, selectedPoiId);
+        }
+
+        public void OnStartNavigationRequested()
+        {
+            VpsSystemDiagnostics.Record("INPUT", "button callback: Start navigation (UI Toolkit)");
+            panelOpen = false;
+            uiToolkitController?.CloseDestinationPickerModal();
+            StartCoroutine(RefreshAndTrack());
+        }
+
+        public void OnStopNavigationRequested()
+        {
+            StopNavigation();
+        }
+
+        public void OnResetSettingsRequested()
+        {
+            ResetUserSettings();
+        }
+
+        public void OnDestinationPickerClosed()
+        {
+            panelOpen = false;
+        }
+
+        public void OnSettingsClosed()
+        {
+            settingsOpen = false;
+            SaveUserSettings(true);
+        }
+
+        private string BuildDiagnosticsSummary()
+        {
+            if (occlusionController == null) return "Depth subsystem chưa kết nối";
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0:0} FPS · {1:0} ms · {2:0} MB\nDepth: {3} ({4})\n{5}",
+                occlusionController.CurrentFps,
+                occlusionController.CurrentFrameTimeMs,
+                occlusionController.AllocatedMemoryMb,
+                occlusionController.IsDepthSubsystemAvailable ? "Sẵn sàng" : "Chưa khả dụng",
+                GetQualityModeLabel(occlusionController.EffectiveMode),
+                occlusionController.ActiveSubsystemSummary);
+        }
+
+        private void Start()
+        {
+            InitializeUiToolkit();
+        }
+
+        public void InitializeUiToolkit()
+        {
+            if (!useUiToolkit) return;
+            if (uiDocument == null) uiDocument = GetComponent<UIDocument>();
+            if (uiDocument == null) uiDocument = gameObject.AddComponent<UIDocument>();
+
+            if (uiDocument.panelSettings == null)
+            {
+                var loadedSettings = Resources.Load<PanelSettings>("UI/NavigationPanelSettings");
+                if (loadedSettings != null)
+                {
+                    uiDocument.panelSettings = loadedSettings;
+                }
+                else
+                {
+                    var settings = ScriptableObject.CreateInstance<PanelSettings>();
+                    settings.name = "RuntimeNavigationPanelSettings";
+                    settings.scaleMode = PanelScaleMode.ScaleWithScreenSize;
+                    settings.referenceResolution = new Vector2Int(390, 844);
+                    settings.match = 0.5f;
+                    settings.screenMatchMode = PanelScreenMatchMode.MatchWidthOrHeight;
+                    uiDocument.panelSettings = settings;
+                }
+            }
+
+            if (uiDocument.visualTreeAsset == null)
+            {
+                uiDocument.visualTreeAsset = Resources.Load<VisualTreeAsset>("UI/NavigationUI");
+            }
+
+            if (uiDocument.visualTreeAsset != null && uiToolkitController == null)
+            {
+                uiToolkitController = new NavigationUiToolkitController(this);
+                if (uiToolkitController.Initialize(uiDocument))
+                {
+                    uiToolkitController.PopulatePois(visiblePois, selectedPoiId);
+                    uiToolkitController.SyncSettingsUi();
+                }
+            }
+        }
+
+        public void OnRetryBootstrapRequested()
+        {
+            bootstrap?.Reload();
+        }
 
         private void Awake()
         {
@@ -187,12 +594,59 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        private void LateUpdate()
+        {
+            if (useUiToolkit && uiToolkitController != null && uiToolkitController.IsActive)
+            {
+                bool isNavigating = trackingRequestAccepted && stableTracking && activeRoutedPoiId != null;
+                PublishedGraphPoiV2 destPoi = FindActivePoi(isNavigating ? activeRoutedPoiId : selectedPoiId);
+                string destLabel = destPoi != null ? CapitalizeFirst(destPoi.Label) : "Điểm đến";
+                float totalLen = companionGuide != null ? companionGuide.TotalRouteLength : 0f;
+                float userDist = companionGuide != null ? companionGuide.UserDistanceOnRoute : 0f;
+                float remainingLen = companionGuide != null ? Mathf.Max(0f, totalLen - userDist) : 0f;
+                string compMsg = companionGuide != null ? companionGuide.CompanionStatusMessage : "Đi theo Robot và dải dẫn hướng trên sàn.";
+
+                var state = new NavigationUiState
+                {
+                    IsTrackingAccepted = trackingRequestAccepted,
+                    IsStableTracking = stableTracking,
+                    IsNavigating = isNavigating,
+                    DestinationLabel = destLabel,
+                    RouteRemainingMeters = remainingLen,
+                    TotalRouteMeters = totalLen,
+                    CompanionMessage = compMsg,
+                    IsCompanionWaiting = companionGuide != null && companionGuide.IsWaitingForUser,
+                    IsCompanionRerouting = companionGuide != null && companionGuide.NeedsReroute,
+                    IsArrived = companionGuide != null && companionGuide.IsAtDestination,
+                    DiagnosticsText = BuildDiagnosticsSummary(),
+                    StatusMessage = status,
+                    BootstrapState = bootstrap != null ? bootstrap.State : NavigationBootstrapState.ManifestLoaded,
+                    BootstrapError = bootstrap != null ? bootstrap.ErrorMessage : null,
+                    ActiveFloorId = bootstrap != null ? bootstrap.ActiveFloorId : null,
+                    TotalPoiCount = activePois != null ? activePois.Count : (visiblePois != null ? visiblePois.Count : 0),
+                    IsBusyConnecting = sitesBusy || startPending,
+                    Fps = occlusionController != null ? occlusionController.CurrentFps : 0f,
+                    FrameTimeMs = occlusionController != null ? occlusionController.CurrentFrameTimeMs : 0f,
+                    MemoryMb = occlusionController != null ? occlusionController.AllocatedMemoryMb : 0f,
+                    DepthAvailable = occlusionController != null && occlusionController.IsDepthSubsystemAvailable,
+                    EffectiveOcclusionMode = occlusionController != null ? occlusionController.EffectiveMode : ArOcclusionQualityMode.Off,
+                };
+
+                uiToolkitController.UpdateState(in state);
+            }
+        }
+
         private readonly NavigationUiTheme theme = new NavigationUiTheme();
         private Vector2 poiScrollPos;
         private string normalizedPoiSearchQuery = string.Empty;
 
         private void OnGUI()
         {
+            if (useUiToolkit && uiToolkitController != null && uiToolkitController.IsActive)
+            {
+                return;
+            }
+
             theme.Initialize();
 
             uiScale = Mathf.Clamp(Mathf.Min(Screen.width, Screen.height) / 900f, 0.9f, 1.35f);
@@ -1376,6 +1830,7 @@ namespace Vps.UnityClient.Navigation
             if (activePois.Count > 0 && FindActivePoi(selectedPoiId) == null)
                 selectedPoiId = activePois[0].Id;
             RebuildVisiblePois();
+            uiToolkitController?.PopulatePois(visiblePois, selectedPoiId);
         }
 
         private PublishedGraphPoiV2 FindActivePoi(string poiId)

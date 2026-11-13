@@ -18,6 +18,18 @@ namespace Vps.UnityClient.Editor
 
             var outputPath = Environment.GetEnvironmentVariable("VPS_ANDROID_APK");
             if (string.IsNullOrWhiteSpace(outputPath))
+            {
+                string[] args = Environment.GetCommandLineArgs();
+                for (int i = 0; i < args.Length - 1; i++)
+                {
+                    if (args[i] == "-buildOutput" && !string.IsNullOrWhiteSpace(args[i + 1]))
+                    {
+                        outputPath = args[i + 1];
+                        break;
+                    }
+                }
+            }
+            if (string.IsNullOrWhiteSpace(outputPath))
                 outputPath = "/tmp/vps-route-recorder.apk";
 
             var options = new BuildPlayerOptions
