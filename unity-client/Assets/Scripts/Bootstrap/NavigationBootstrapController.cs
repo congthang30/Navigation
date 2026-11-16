@@ -3,6 +3,7 @@ using System.Collections;
 using UnityEngine;
 using Vps.UnityClient.Api;
 using Vps.UnityClient.Diagnostics;
+using Vps.UnityClient.Navigation;
 
 namespace Vps.UnityClient.Bootstrap
 {
@@ -29,6 +30,8 @@ namespace Vps.UnityClient.Bootstrap
         public string ErrorMessage { get; private set; }
         public string ActiveFloorId => activeConfig == null ? null : activeConfig.ActiveFloorId;
         public string ActiveVersionId => activeConfig == null ? null : activeConfig.ActiveVersionId;
+        public bool IsUsingLocalOverride { get; private set; }
+        public string LocalManifestPathOverride { get; set; }
 
         public bool UseEmbeddedManifest
         {
@@ -41,7 +44,7 @@ namespace Vps.UnityClient.Bootstrap
             State = NavigationBootstrapState.Boot;
             if (useEmbeddedManifest)
             {
-                LoadEmbeddedManifest();
+                LoadEmbeddedOrLocalManifest();
             }
         }
 
@@ -59,10 +62,11 @@ namespace Vps.UnityClient.Bootstrap
             activeConfig = null;
             Manifest = null;
             ErrorMessage = null;
+            IsUsingLocalOverride = false;
 
             if (useEmbeddedManifest)
             {
-                if (LoadEmbeddedManifest())
+                if (LoadEmbeddedOrLocalManifest())
                 {
                     return;
                 }
@@ -77,52 +81,52 @@ namespace Vps.UnityClient.Bootstrap
             StartCoroutine(FetchFromApi(client));
         }
 
+        public bool LoadEmbeddedOrLocalManifest()
+        {
+            StopAllCoroutines();
+            activeConfig = null;
+            Manifest = null;
+            ErrorMessage = null;
+            IsUsingLocalOverride = false;
+            SetState(NavigationBootstrapState.Boot);
+
+            string configJson = ReadEmbeddedConfigJson();
+            ProcessConfigJson(configJson);
+            if (State == NavigationBootstrapState.FetchingManifest &&
+                LocalSiteGraphStore.HasLocalOverride(LocalManifestPathOverride))
+            {
+                if (LocalSiteGraphStore.TryLoadManifest(
+                        activeConfig.ActiveFloorId,
+                        activeConfig.ActiveVersionId,
+                        out PublishedSiteGraphManifest localManifest,
+                        out string localError,
+                        LocalManifestPathOverride))
+                {
+                    Manifest = localManifest;
+                    IsUsingLocalOverride = true;
+                    SetState(NavigationBootstrapState.ManifestLoaded);
+                    VpsSystemDiagnostics.Record("NAV", "local offline manifest loaded: floor=" + ActiveFloorId + " pois=" +
+                        (localManifest.Graph != null && localManifest.Graph.Pois != null ? localManifest.Graph.Pois.Length : 0));
+                    return true;
+                }
+
+                VpsSystemDiagnostics.Record("NAV", "local offline manifest invalid, falling back to embedded: " + localError);
+            }
+
+            return LoadEmbeddedManifest();
+        }
+
         public bool LoadEmbeddedManifest()
         {
             StopAllCoroutines();
             activeConfig = null;
             Manifest = null;
             ErrorMessage = null;
+            IsUsingLocalOverride = false;
             SetState(NavigationBootstrapState.Boot);
 
-            string configJson = null;
-            string manifestJson = null;
-
-            try
-            {
-                TextAsset configAsset = Resources.Load<TextAsset>("ActiveNavigationConfig");
-                if (configAsset != null && !string.IsNullOrWhiteSpace(configAsset.text))
-                {
-                    configJson = configAsset.text;
-                }
-            }
-            catch (Exception ex)
-            {
-                VpsSystemDiagnostics.Record("NAV", "Resources config load exception: " + ex.Message);
-            }
-
-            try
-            {
-                TextAsset manifestAsset = Resources.Load<TextAsset>("ActiveNavigationManifest");
-                if (manifestAsset != null && !string.IsNullOrWhiteSpace(manifestAsset.text))
-                {
-                    manifestJson = manifestAsset.text;
-                }
-            }
-            catch (Exception ex)
-            {
-                VpsSystemDiagnostics.Record("NAV", "Resources manifest load exception: " + ex.Message);
-            }
-
-            if (string.IsNullOrWhiteSpace(configJson))
-            {
-                configJson = FallbackEmbeddedConfigJson;
-            }
-
-            if (string.IsNullOrWhiteSpace(manifestJson))
-            {
-                manifestJson = FallbackEmbeddedManifestJson;
-            }
+            string configJson = ReadEmbeddedConfigJson();
+            string manifestJson = ReadEmbeddedManifestJson();
 
             ProcessConfigJson(configJson);
             if (State != NavigationBootstrapState.FetchingManifest)
@@ -138,6 +142,93 @@ namespace Vps.UnityClient.Bootstrap
 
             VpsSystemDiagnostics.Record("NAV", "embedded manifest loaded successfully: floor=" + ActiveFloorId + " version=" + ActiveVersionId);
             return true;
+        }
+
+        public bool ApplyAndSaveLocalManifest(PublishedSiteGraphManifest updatedManifest, out string error)
+        {
+            if (updatedManifest == null)
+            {
+                error = "Bản đồ cập nhật không hợp lệ.";
+                return false;
+            }
+
+            if (activeConfig == null)
+            {
+                ProcessConfigJson(ReadEmbeddedConfigJson());
+            }
+
+            if (activeConfig == null ||
+                !string.Equals(updatedManifest.FloorId, activeConfig.ActiveFloorId, StringComparison.Ordinal) ||
+                !string.Equals(updatedManifest.VersionId, activeConfig.ActiveVersionId, StringComparison.Ordinal))
+            {
+                error = "Phiên bản bản đồ không khớp với cấu hình hiện tại.";
+                return false;
+            }
+
+            if (!LocalSiteGraphStore.SaveManifest(updatedManifest, out error, LocalManifestPathOverride))
+            {
+                return false;
+            }
+
+            if (!LocalSiteGraphStore.TryLoadManifest(
+                    activeConfig.ActiveFloorId,
+                    activeConfig.ActiveVersionId,
+                    out PublishedSiteGraphManifest verifiedManifest,
+                    out error,
+                    LocalManifestPathOverride))
+            {
+                return false;
+            }
+
+            Manifest = verifiedManifest;
+            IsUsingLocalOverride = true;
+            ErrorMessage = null;
+            SetState(NavigationBootstrapState.ManifestLoaded);
+            VpsSystemDiagnostics.Record("NAV", "saved local offline manifest: pois=" +
+                (verifiedManifest.Graph != null && verifiedManifest.Graph.Pois != null ? verifiedManifest.Graph.Pois.Length : 0));
+            return true;
+        }
+
+        public bool ResetLocalManifestToDefault()
+        {
+            LocalSiteGraphStore.DeleteLocalOverride(LocalManifestPathOverride);
+            return LoadEmbeddedManifest();
+        }
+
+        private static string ReadEmbeddedConfigJson()
+        {
+            string configJson = null;
+            try
+            {
+                TextAsset configAsset = Resources.Load<TextAsset>("ActiveNavigationConfig");
+                if (configAsset != null && !string.IsNullOrWhiteSpace(configAsset.text))
+                {
+                    configJson = configAsset.text;
+                }
+            }
+            catch (Exception ex)
+            {
+                VpsSystemDiagnostics.Record("NAV", "Resources config load exception: " + ex.Message);
+            }
+            return string.IsNullOrWhiteSpace(configJson) ? FallbackEmbeddedConfigJson : configJson;
+        }
+
+        private static string ReadEmbeddedManifestJson()
+        {
+            string manifestJson = null;
+            try
+            {
+                TextAsset manifestAsset = Resources.Load<TextAsset>("ActiveNavigationManifest");
+                if (manifestAsset != null && !string.IsNullOrWhiteSpace(manifestAsset.text))
+                {
+                    manifestJson = manifestAsset.text;
+                }
+            }
+            catch (Exception ex)
+            {
+                VpsSystemDiagnostics.Record("NAV", "Resources manifest load exception: " + ex.Message);
+            }
+            return string.IsNullOrWhiteSpace(manifestJson) ? FallbackEmbeddedManifestJson : manifestJson;
         }
 
         public void ProcessConfigJson(string json)
@@ -220,6 +311,7 @@ namespace Vps.UnityClient.Bootstrap
         {
             activeConfig = null;
             Manifest = null;
+            IsUsingLocalOverride = false;
             ErrorMessage = string.IsNullOrWhiteSpace(message) ? "V2 navigation data is invalid." : message;
             VpsSystemDiagnostics.Record("NAV", "bootstrap failed: " + ErrorMessage);
             SetState(NavigationBootstrapState.Error);

@@ -73,6 +73,7 @@ namespace Vps.UnityClient.Editor
             string[] shaderNames =
             {
                 "Vps/ARRouteLine",
+                "Vps/ARCompanionOcclusion",
                 "Vps/AROcclusionStabilizationMesh",
                 "Nsdk/ZBufferOcclusion",
                 "Nsdk/OcclusionMesh",

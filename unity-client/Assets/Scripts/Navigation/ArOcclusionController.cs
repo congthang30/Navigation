@@ -12,6 +12,7 @@ using UnityEngine.Rendering;
 using UnityEngine.XR;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using UnityEngine.XR.Management;
 
 namespace Vps.UnityClient.Navigation
 {
@@ -28,13 +29,13 @@ namespace Vps.UnityClient.Navigation
 
         /// <summary>
         /// Production default for mobile/tablet: Instant Depth + NSDK Occlusion Extension
-        /// (BypassOcclusionManagerUpdates, SmoothEdges, Principal Occludee tracking, 14 Hz async depth).
+        /// (BypassOcclusionManagerUpdates, SmoothEdges, Principal Occludee tracking).
         /// </summary>
         Balanced = 2,
 
         /// <summary>
         /// High-end mode: Instant Depth + NSDK Occlusion Extension + Runtime Mesh-Blended Occlusion Stabilization
-        /// (20 Hz depth + ARMeshManager + NsdkMeshingExtension when supported by graphics API and subsystem).
+        /// when supported by graphics API and subsystem.
         /// </summary>
         HighQuality = 3
     }
@@ -48,10 +49,29 @@ namespace Vps.UnityClient.Navigation
     public sealed class ArOcclusionController : MonoBehaviour
     {
         public const int RuntimeOcclusionMeshLayer = 8;
-        public const uint BalancedTargetFrameRate = 14u;
+
+        /// <summary>
+        /// Depth inference rate for Balanced mode. The NSDK caps the recommended rate at
+        /// NsdkOcclusionSubsystem.MaxRecommendedFrameRate (20), so this is the highest rate the SDK
+        /// supports without dropping frames.
+        /// </summary>
+        public const uint BalancedTargetFrameRate = 20u;
+
+        /// <summary>
+        /// Depth inference rate for HighQuality mode. Identical to Balanced on purpose: the SDK
+        /// maximum recommended rate is 20 Hz, and HighQuality spends its extra budget on the higher
+        /// resolution depth mode and on mesh based stabilization instead of on a faster inference rate.
+        /// </summary>
         public const uint HighQualityTargetFrameRate = 20u;
+
         public const float DefaultStabilizationThreshold = 0.25f;
-        public const float DefaultRouteDepthBiasMeters = 0.18f;
+
+        /// <summary>
+        /// Default metric depth priority offset for the route ribbon (meters).
+        /// Small on purpose: it only has to beat floor depth noise (a few centimeters), while a large
+        /// value would lift the ribbon off the floor and let it punch through low obstacles.
+        /// </summary>
+        public const float DefaultRouteDepthBiasMeters = 0.03f;
 
         private static readonly int ColorMaskPropId = Shader.PropertyToID("_ColorMask");
         private static readonly int DepthBiasPropId = Shader.PropertyToID("_DepthBiasMeters");
@@ -80,6 +100,7 @@ namespace Vps.UnityClient.Navigation
         [SerializeField] private bool depthVisualizationEnabled = false;
         [SerializeField] private bool runtimeMeshDebugEnabled = false;
         [SerializeField] private float routeDepthBiasMeters = DefaultRouteDepthBiasMeters;
+        [SerializeField] private bool useStabilizedOcclusionDistance = true;
 
         private Camera arCamera;
         private XROrigin xrOrigin;
@@ -93,15 +114,19 @@ namespace Vps.UnityClient.Navigation
         private Material runtimeMeshMaterial;
         private Renderer principalOccludee;
 
+        private readonly OcclusionDistanceStabilizer distanceStabilizer = new OcclusionDistanceStabilizer();
+
         private ArOcclusionQualityMode effectiveMode = ArOcclusionQualityMode.Off;
         private bool isInitialized;
         private bool isDepthSubsystemAvailable;
         private bool isMeshingSubsystemAvailable;
         private bool isSegmentationSubsystemAvailable;
         private bool isStabilizationSupportedByGraphicsApi;
+        private bool? stabilizationGraphicsApiSupportOverride;
         private bool lastPrincipalOccludeeActive;
         private bool isBypassUpdatesConfigured;
         private bool isStabilizationConfigured;
+        private bool hasAppliedConfiguration;
 
         // Telemetry state (updated without per-frame GC allocation)
         private float smoothedDeltaTime = 0.0166f;
@@ -112,6 +137,16 @@ namespace Vps.UnityClient.Navigation
         private float nextTelemetryUpdateTime;
         private string activeSubsystemSummary = "Chua khoi tao";
         private string lastWarningOrError = string.Empty;
+        private string fallbackReason = string.Empty;
+
+        private string depthModeName = "None";
+        private uint depthTargetFrameRate;
+        private float estimatedDepthFps;
+        private Vector2Int depthTextureResolution;
+        private Matrix4x4? lastDepthExtrinsics;
+        private int depthFrameCounter;
+        private float depthFpsWindowStart;
+        private float occludeeEyeDepth;
 
         public ArOcclusionQualityMode RequestedMode => requestedMode;
         public ArOcclusionQualityMode EffectiveMode => effectiveMode;
@@ -128,6 +163,69 @@ namespace Vps.UnityClient.Navigation
             isStabilizationConfigured &&
             nsdkOcclusion != null &&
             nsdkOcclusion.enabled;
+
+        /// <summary>Graphics API actually used by the device, reported for diagnostics.</summary>
+        public string GraphicsApiName => SystemInfo.graphicsDeviceType + " (" + SystemInfo.graphicsDeviceName + ")";
+
+        /// <summary>Environment depth mode requested from the occlusion subsystem.</summary>
+        public string DepthModeName => depthModeName;
+
+        /// <summary>Configured depth inference rate (Hz).</summary>
+        public uint DepthTargetFrameRate => depthTargetFrameRate;
+
+        /// <summary>
+        /// Estimated rate at which new depth frames arrive (Hz). This is derived from the depth
+        /// prediction pose changing, so it is an estimate: a completely static camera and a static
+        /// scene can report fewer frames than the configured target.
+        /// </summary>
+        public float EstimatedDepthFps => estimatedDepthFps;
+
+        /// <summary>Resolution of the depth image currently used for occlusion (pixels).</summary>
+        public Vector2Int DepthTextureResolution => depthTextureResolution;
+
+        /// <summary>Current (smoothed) back projection distance used for the depth warp (meters).</summary>
+        public float OccludeeEyeDepth => occludeeEyeDepth;
+
+        /// <summary>Occlusion distance mode currently active on the NSDK extension.</summary>
+        public string OcclusionDistanceModeName =>
+            nsdkOcclusion == null ? "None" : nsdkOcclusion.OcclusionDistanceMode.ToString();
+
+        /// <summary>Reason why the effective mode differs from the requested mode (empty when they match).</summary>
+        public string FallbackReason => fallbackReason;
+
+        /// <summary>
+        /// Human readable occlusion diagnostics: graphics API, requested/effective mode, depth mode,
+        /// estimated depth frame rate, depth resolution, occlusion reference plane and stabilization state.
+        /// </summary>
+        public string DiagnosticsReport
+        {
+            get
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append("API ").Append(GraphicsApiName);
+                sb.Append(" · ").Append(GetModeDisplayName(effectiveMode));
+                sb.Append(" (yêu cầu: ").Append(GetModeDisplayName(requestedMode)).Append(')');
+                sb.Append('\n');
+                sb.Append("Depth ").Append(depthModeName);
+                sb.Append(" @ ").Append(depthTargetFrameRate).Append("Hz");
+                sb.Append(" · thực tế ~").Append(estimatedDepthFps.ToString("0")).Append("Hz");
+                sb.Append(" · ").Append(depthTextureResolution.x).Append('x').Append(depthTextureResolution.y);
+                sb.Append('\n');
+                sb.Append("Plane ").Append(occludeeEyeDepth.ToString("0.00")).Append(" m");
+                sb.Append(" · ").Append(OcclusionDistanceModeName);
+                sb.Append(" · MeshStab ").Append(IsStabilizationActive ? "ON" : "OFF");
+                sb.Append(" (").Append(activeRuntimeMeshCount).Append(')');
+                if (!string.IsNullOrEmpty(fallbackReason))
+                {
+                    sb.Append('\n').Append("Fallback: ").Append(fallbackReason);
+                }
+                if (!string.IsNullOrEmpty(lastWarningOrError))
+                {
+                    sb.Append('\n').Append(lastWarningOrError);
+                }
+                return sb.ToString();
+            }
+        }
 
         public bool PreferSmoothEdges
         {
@@ -189,7 +287,26 @@ namespace Vps.UnityClient.Navigation
             get => routeDepthBiasMeters;
             set
             {
-                routeDepthBiasMeters = Mathf.Clamp(value, 0.0f, 0.35f);
+                // The bias only has to beat floor depth noise. Values beyond ~15 cm make the route
+                // ribbon visible through low obstacles, so the range is deliberately limited.
+                routeDepthBiasMeters = Mathf.Clamp(value, 0.0f, 0.15f);
+            }
+        }
+
+        /// <summary>
+        /// Whether the occlusion reference distance (back projection plane) is computed by the app with a
+        /// robust median based, temporally smoothed estimate. When disabled the NSDK default is used,
+        /// which is the CLOSEST depth sample of the field of view.
+        /// </summary>
+        public bool UseStabilizedOcclusionDistance
+        {
+            get => useStabilizedOcclusionDistance;
+            set
+            {
+                if (useStabilizedOcclusionDistance == value) return;
+                useStabilizedOcclusionDistance = value;
+                distanceStabilizer.Reset();
+                occludeeEyeDepth = 0f;
             }
         }
 
@@ -215,13 +332,36 @@ namespace Vps.UnityClient.Navigation
 
             arCamera = camera;
             xrOrigin = origin;
-            isStabilizationSupportedByGraphicsApi = SystemInfo.graphicsDeviceType != GraphicsDeviceType.Vulkan;
+            RefreshStabilizationGraphicsApiSupport();
 
             EnsureCameraOcclusionComponents();
             CheckSubsystemsAvailability();
             isInitialized = true;
             ApplyCurrentConfiguration();
             RefreshTelemetryNow();
+        }
+
+        /// <summary>
+        /// Overrides the auto detected graphics API support for the occlusion stabilization.
+        /// The NSDK refuses to deploy the stabilization feature on Vulkan
+        /// (NianticSpatial.NSDK.AR.Occlusion.OcclusionComponentDeployment, "Occlusion stabilization is
+        /// not yet supported on Vulkan devices."), so the controller mirrors that check. This setter
+        /// exists for diagnostics and for automated regression tests; pass null to restore auto detection.
+        /// </summary>
+        public void SetStabilizationGraphicsApiSupportOverride(bool? supported)
+        {
+            stabilizationGraphicsApiSupportOverride = supported;
+            RefreshStabilizationGraphicsApiSupport();
+            if (isInitialized)
+            {
+                ApplyCurrentConfiguration();
+            }
+        }
+
+        private void RefreshStabilizationGraphicsApiSupport()
+        {
+            isStabilizationSupportedByGraphicsApi = stabilizationGraphicsApiSupportOverride
+                ?? (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Vulkan);
         }
 
         /// <summary>
@@ -296,9 +436,20 @@ namespace Vps.UnityClient.Navigation
             if (Time.unscaledTime >= nextTelemetryUpdateTime)
             {
                 nextTelemetryUpdateTime = Time.unscaledTime + 0.5f;
+                EnsureCameraOcclusionComponents();
                 CheckSubsystemsAvailability();
                 RefreshTelemetryNow();
+                ApplyConfigurationIfResolutionChanged();
             }
+        }
+
+        /// <summary>
+        /// Runs after the NSDK occlusion extension (which executes at DefaultExecutionOrder int.MinValue),
+        /// so the occlusion reference distance written here is the one used by the next depth reprojection.
+        /// </summary>
+        private void LateUpdate()
+        {
+            UpdateOcclusionReferenceDistance();
         }
 
         private void EnsureCameraOcclusionComponents()
@@ -310,17 +461,39 @@ namespace Vps.UnityClient.Navigation
             if (occlusionManager == null)
             {
                 occlusionManager = arCamera.gameObject.AddComponent<AROcclusionManager>();
-                occlusionManager.requestedHumanDepthMode = HumanSegmentationDepthMode.Disabled;
-                occlusionManager.requestedHumanStencilMode = HumanSegmentationStencilMode.Disabled;
-                occlusionManager.requestedOcclusionPreferenceMode = OcclusionPreferenceMode.PreferEnvironmentOcclusion;
             }
 
-            // 2. Ensure NsdkOcclusionExtension is present on the AR Camera
-            nsdkOcclusion = arCamera.GetComponent<NsdkOcclusionExtension>();
+            // Human segmentation is never used by this app: it is expensive and it would let a
+            // segmented person occlude the companion. Applied unconditionally because the manager can
+            // also be created implicitly by the NsdkOcclusionExtension RequireComponent attribute.
+            occlusionManager.requestedHumanDepthMode = HumanSegmentationDepthMode.Disabled;
+            occlusionManager.requestedHumanStencilMode = HumanSegmentationStencilMode.Disabled;
+            occlusionManager.requestedOcclusionPreferenceMode = OcclusionPreferenceMode.PreferEnvironmentOcclusion;
+
+            // 2. Ensure NsdkOcclusionExtension is present on the AR Camera.
             if (nsdkOcclusion == null)
             {
-                nsdkOcclusion = arCamera.gameObject.AddComponent<NsdkOcclusionExtension>();
+                // At runtime the extension destroys itself when the XR loader has not produced an
+                // XROcclusionSubsystem yet, so it must only be created once the subsystem exists.
+                // In the editor the subsystem never exists and the extension stays alive (it simply
+                // waits for the XR manager), so it is created unconditionally there.
+                if (Application.isPlaying && !IsOcclusionSubsystemLoaded()) return;
+
+                nsdkOcclusion = arCamera.GetComponent<NsdkOcclusionExtension>();
+                if (nsdkOcclusion == null)
+                {
+                    nsdkOcclusion = arCamera.gameObject.AddComponent<NsdkOcclusionExtension>();
+                }
             }
+        }
+
+        private static bool IsOcclusionSubsystemLoaded()
+        {
+            if (XRGeneralSettings.Instance == null || XRGeneralSettings.Instance.Manager == null) return false;
+            var manager = XRGeneralSettings.Instance.Manager;
+            if (!manager.isInitializationComplete) return false;
+            return manager.activeLoader != null &&
+                   manager.activeLoader.GetLoadedSubsystem<XROcclusionSubsystem>() != null;
         }
 
         private void CheckSubsystemsAvailability()
@@ -331,9 +504,7 @@ namespace Vps.UnityClient.Navigation
             }
             else
             {
-                var depthDescriptors = new List<XROcclusionSubsystemDescriptor>();
-                SubsystemManager.GetSubsystemDescriptors(depthDescriptors);
-                isDepthSubsystemAvailable = depthDescriptors.Count > 0;
+                isDepthSubsystemAvailable = IsOcclusionSubsystemLoaded();
             }
 
             if (runtimeMeshManager != null && runtimeMeshManager.subsystem != null)
@@ -360,15 +531,33 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        /// <summary>
+        /// Re-resolves the requested mode and re-applies the configuration when the resolution changed
+        /// (for example when the AR session became ready after the controller was initialized, or when a
+        /// subsystem appeared or disappeared). Without this the effective mode was latched forever at
+        /// the moment Initialize() ran, which silently disabled occlusion or downgraded HighQuality.
+        /// </summary>
+        private void ApplyConfigurationIfResolutionChanged()
+        {
+            if (!isInitialized) return;
+
+            ArOcclusionQualityMode resolved = ResolveEffectiveMode(requestedMode);
+            if (resolved == effectiveMode && hasAppliedConfiguration) return;
+            ApplyCurrentConfiguration();
+        }
+
         private void ApplyCurrentConfiguration()
         {
             if (arCamera == null || occlusionManager == null)
             {
                 effectiveMode = ArOcclusionQualityMode.Off;
+                hasAppliedConfiguration = false;
+                distanceStabilizer.Reset();
                 return;
             }
 
             effectiveMode = ResolveEffectiveMode(requestedMode);
+            hasAppliedConfiguration = true;
 
             if (effectiveMode == ArOcclusionQualityMode.Off)
             {
@@ -390,38 +579,46 @@ namespace Vps.UnityClient.Navigation
 
         public ArOcclusionQualityMode ResolveEffectiveMode(ArOcclusionQualityMode desired)
         {
+            fallbackReason = string.Empty;
+
             if (desired == ArOcclusionQualityMode.Off)
             {
                 return ArOcclusionQualityMode.Off;
             }
 
-            if (!Application.isPlaying && !isDepthSubsystemAvailable)
+            if (Application.isPlaying)
             {
-                if (desired == ArOcclusionQualityMode.HighQuality && !isStabilizationSupportedByGraphicsApi)
+                if (!isDepthSubsystemAvailable)
                 {
-                    return ArOcclusionQualityMode.Balanced;
+                    // The AR session may not have produced its subsystems yet. Keep the requested mode
+                    // pending and re-evaluate it later instead of latching Off for the whole session.
+                    fallbackReason = "Depth subsystem chua san sang (AR session dang khoi dong)";
+                    return desired;
                 }
+
+                if (desired == ArOcclusionQualityMode.HighQuality)
+                {
+                    if (!isStabilizationSupportedByGraphicsApi)
+                    {
+                        fallbackReason = "Occlusion Stabilization khong ho tro Vulkan; tu dong dung Balanced.";
+                        return ArOcclusionQualityMode.Balanced;
+                    }
+                    if (!isMeshingSubsystemAvailable)
+                    {
+                        fallbackReason = "XRMeshSubsystem khong kha dung; tu dong dung Balanced.";
+                        return ArOcclusionQualityMode.Balanced;
+                    }
+                }
+
                 return desired;
             }
 
-            if (Application.isPlaying && !isDepthSubsystemAvailable)
+            // Outside play mode (editor tooling) the subsystems are not running, so only the
+            // graphics API limitation can be evaluated.
+            if (desired == ArOcclusionQualityMode.HighQuality && !isStabilizationSupportedByGraphicsApi)
             {
-                lastWarningOrError = "Depth subsystem khong kha dung tren thiet bi nay; chuyen ve Off.";
-                return ArOcclusionQualityMode.Off;
-            }
-
-            if (desired == ArOcclusionQualityMode.HighQuality)
-            {
-                if (!isStabilizationSupportedByGraphicsApi)
-                {
-                    lastWarningOrError = "Occlusion Stabilization khong ho tro Vulkan; tu dong dung Balanced.";
-                    return ArOcclusionQualityMode.Balanced;
-                }
-                if (Application.isPlaying && !isMeshingSubsystemAvailable)
-                {
-                    lastWarningOrError = "XRMeshSubsystem khong kha dung; tu dong dung Balanced.";
-                    return ArOcclusionQualityMode.Balanced;
-                }
+                fallbackReason = "Occlusion Stabilization khong ho tro Vulkan; tu dong dung Balanced.";
+                return ArOcclusionQualityMode.Balanced;
             }
 
             return desired;
@@ -431,6 +628,9 @@ namespace Vps.UnityClient.Navigation
         {
             isBypassUpdatesConfigured = false;
             isStabilizationConfigured = false;
+            depthModeName = "Disabled";
+            depthTargetFrameRate = 0;
+            distanceStabilizer.Reset();
 
             if (nsdkOcclusion != null)
             {
@@ -461,6 +661,9 @@ namespace Vps.UnityClient.Navigation
         {
             isBypassUpdatesConfigured = false;
             isStabilizationConfigured = false;
+            depthModeName = "Fastest (AR Foundation)";
+            depthTargetFrameRate = 0;
+            distanceStabilizer.Reset();
 
             DisableRuntimeMeshing();
             DisableSemanticSuppression();
@@ -494,20 +697,28 @@ namespace Vps.UnityClient.Navigation
                 return;
             }
 
-            // Configure AROcclusionManager for Environment Depth
+            // Configure AROcclusionManager for Environment Depth.
+            // Balanced uses Medium instead of Fastest: the Fastest depth mode is the cheapest NSDK
+            // depth model and its low resolution is the main source of edge bleeding and false
+            // occlusion around object silhouettes.
+            EnvironmentDepthMode depthMode = mode == ArOcclusionQualityMode.HighQuality
+                ? EnvironmentDepthMode.Best
+                : EnvironmentDepthMode.Medium;
             occlusionManager.requestedHumanDepthMode = HumanSegmentationDepthMode.Disabled;
             occlusionManager.requestedHumanStencilMode = HumanSegmentationStencilMode.Disabled;
             occlusionManager.requestedOcclusionPreferenceMode = OcclusionPreferenceMode.PreferEnvironmentOcclusion;
-            occlusionManager.requestedEnvironmentDepthMode =
-                mode == ArOcclusionQualityMode.HighQuality ? EnvironmentDepthMode.Medium : EnvironmentDepthMode.Fastest;
+            occlusionManager.requestedEnvironmentDepthMode = depthMode;
             occlusionManager.enabled = true;
+            depthModeName = depthMode.ToString();
 
             // Configure NsdkOcclusionExtension with optimal mobile settings:
             // - BypassOcclusionManagerUpdates = true eliminates redundant main/render thread sync stalls
             // - OverrideOcclusionManagerSettings = true lets NSDK own the depth pipeline cleanly
             nsdkOcclusion.OverrideOcclusionManagerSettings = true;
-            nsdkOcclusion.TargetFrameRate =
-                mode == ArOcclusionQualityMode.HighQuality ? HighQualityTargetFrameRate : BalancedTargetFrameRate;
+            depthTargetFrameRate = mode == ArOcclusionQualityMode.HighQuality
+                ? HighQualityTargetFrameRate
+                : BalancedTargetFrameRate;
+            nsdkOcclusion.TargetFrameRate = depthTargetFrameRate;
             nsdkOcclusion.StabilizationThreshold = DefaultStabilizationThreshold;
 
             isBypassUpdatesConfigured = true;
@@ -613,9 +824,15 @@ namespace Vps.UnityClient.Navigation
             if (nsdkOcclusion != null)
             {
                 SetNsdkField(NsdkRequestSuppressionField, false);
+                // Clear the requested channel list as well, otherwise the channels accumulate on the
+                // SDK side every time the feature is toggled.
+                SetNsdkField(NsdkSuppressionChannelsField, new List<SceneSegmentationChannel>());
                 if (IsNsdkInitialized())
                 {
                     nsdkOcclusion.IsOcclusionSuppressionEnabled = false;
+                    nsdkOcclusion.RemoveSceneSegmentationSuppressionChannel(SceneSegmentationChannel.Sky);
+                    nsdkOcclusion.RemoveSceneSegmentationSuppressionChannel(SceneSegmentationChannel.Ground);
+                    nsdkOcclusion.RemoveSceneSegmentationSuppressionChannel(SceneSegmentationChannel.ArtificialGround);
                 }
             }
             if (segmentationManager != null)
@@ -788,6 +1005,62 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        /// <summary>
+        /// Computes a robust occlusion reference distance and writes it into the NSDK's back projection
+        /// plane. The NSDK estimates that distance as the CLOSEST depth sample in the field of view,
+        /// which collapses towards the camera whenever a near object enters the frame and misaligns
+        /// the whole depth buffer. This replaces it with a median based, temporally smoothed estimate.
+        /// </summary>
+        private void UpdateOcclusionReferenceDistance()
+        {
+            if (!isInitialized || nsdkOcclusion == null || !nsdkOcclusion.enabled)
+            {
+                distanceStabilizer.Reset();
+                occludeeEyeDepth = 0f;
+                return;
+            }
+
+            if (effectiveMode != ArOcclusionQualityMode.Balanced &&
+                effectiveMode != ArOcclusionQualityMode.HighQuality)
+            {
+                distanceStabilizer.Reset();
+                occludeeEyeDepth = 0f;
+                return;
+            }
+
+            if (!useStabilizedOcclusionDistance)
+            {
+                // Fall back to the NSDK default (closest depth sample of the field of view).
+                distanceStabilizer.Reset();
+                occludeeEyeDepth = 0f;
+                return;
+            }
+
+            Rect region = OcclusionDistanceStabilizer.TryGetScreenRect(principalOccludee, arCamera, out Rect occludeeRect)
+                ? occludeeRect
+                : DefaultSamplingRegion;
+
+            if (!distanceStabilizer.TryEstimate(nsdkOcclusion, region, out float rawDistance))
+            {
+                // No usable depth this frame: keep the previous reference distance.
+                return;
+            }
+
+            float smoothed = distanceStabilizer.Smooth(rawDistance, Time.unscaledDeltaTime);
+            occludeeEyeDepth = smoothed;
+
+            // Written after the NSDK extension has computed its own (minimum based) estimate for this
+            // frame, so this value is the one consumed by the next depth reprojection.
+            NianticSpatial.NSDK.AR.Utilities.XRDisplayContext.OccludeeEyeDepth = smoothed;
+        }
+
+        /// <summary>
+        /// Central region used for the occlusion reference distance when no principal occludee is
+        /// available. Matches the region the NSDK uses for its own ClosestOccluder sampling
+        /// (k_FullScreenSampleBorder = 0.2).
+        /// </summary>
+        private static Rect DefaultSamplingRegion => new Rect(0.2f, 0.2f, 0.6f, 0.6f);
+
         private bool IsNsdkInitialized()
         {
             if (nsdkOcclusion == null || NsdkIsInitializedField == null || NsdkOcclusionComponentField == null) return false;
@@ -815,6 +1088,8 @@ namespace Vps.UnityClient.Navigation
                     ? runtimeMeshManager.meshes.Count
                     : 0;
 
+            UpdateDepthTelemetry();
+
             string modeLabel = GetModeDisplayName(effectiveMode);
             string subName = occlusionManager != null && occlusionManager.subsystem != null
                 ? occlusionManager.subsystem.subsystemDescriptor.id
@@ -822,7 +1097,47 @@ namespace Vps.UnityClient.Navigation
             string occludeeState = lastPrincipalOccludeeActive ? "Occludee: Doraemon" : "Occludee: Closest";
             string stabState = IsStabilizationActive ? $"MeshStab: ON ({activeRuntimeMeshCount})" : "MeshStab: OFF";
 
-            activeSubsystemSummary = $"{modeLabel} | {subName} | {occludeeState} | {stabState}";
+            activeSubsystemSummary =
+                $"{modeLabel} | {subName} | {occludeeState} | {stabState} | Depth {depthModeName} @ {depthTargetFrameRate}Hz" +
+                $" | Res {depthTextureResolution.x}x{depthTextureResolution.y} | Plane {occludeeEyeDepth:0.00}m";
+        }
+
+        /// <summary>
+        /// Samples the live depth image to report its resolution and to estimate how often new depth
+        /// frames actually arrive.
+        /// </summary>
+        private void UpdateDepthTelemetry()
+        {
+            if (nsdkOcclusion == null || !nsdkOcclusion.enabled)
+            {
+                depthTextureResolution = Vector2Int.zero;
+                return;
+            }
+
+            Texture2D depthTexture = nsdkOcclusion.DepthTexture;
+            if (depthTexture != null)
+            {
+                depthTextureResolution = new Vector2Int(depthTexture.width, depthTexture.height);
+            }
+
+            Matrix4x4? extrinsics = nsdkOcclusion.LatestExtrinsicsMatrix;
+            if (extrinsics.HasValue && (!lastDepthExtrinsics.HasValue || extrinsics.Value != lastDepthExtrinsics.Value))
+            {
+                lastDepthExtrinsics = extrinsics;
+                depthFrameCounter++;
+            }
+
+            float now = Time.unscaledTime;
+            if (depthFpsWindowStart <= 0f)
+            {
+                depthFpsWindowStart = now;
+            }
+            else if (now - depthFpsWindowStart >= 1f)
+            {
+                estimatedDepthFps = depthFrameCounter / (now - depthFpsWindowStart);
+                depthFrameCounter = 0;
+                depthFpsWindowStart = now;
+            }
         }
 
         public static string GetModeDisplayName(ArOcclusionQualityMode mode)

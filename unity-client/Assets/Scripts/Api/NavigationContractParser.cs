@@ -62,6 +62,7 @@ namespace Vps.UnityClient.Api
         public AnchorLocalPointV2 AnchorLocal;
         public string Provenance;
         public string SourceMarkerId;
+        public string Description;
     }
 
     [Serializable]
@@ -366,11 +367,11 @@ namespace Vps.UnityClient.Api
             string path = "manifest.graph.pois[" + index + "]";
             JObject value;
             if (!TryObjectToken(token, path, out value, out error)) return false;
-            string[] allowed = value.Property("sourceMarkerId") == null
-                ? new[] { "id", "label", "category", "isActive", "nodeId", "anchorLocal", "provenance" }
-                : new[] { "id", "label", "category", "isActive", "nodeId", "anchorLocal", "provenance", "sourceMarkerId" };
-            if (!Exact(value, path, out error, allowed)) return false;
-            string id, label, category, nodeId, provenance, sourceMarkerId = null;
+            var allowed = new List<string> { "id", "label", "category", "isActive", "nodeId", "anchorLocal", "provenance" };
+            if (value.Property("sourceMarkerId") != null) allowed.Add("sourceMarkerId");
+            if (value.Property("description") != null) allowed.Add("description");
+            if (!Exact(value, path, out error, allowed.ToArray())) return false;
+            string id, label, category, nodeId, provenance, sourceMarkerId = null, description = null;
             bool active;
             AnchorLocalPointV2 point;
             if (!TryId(value["id"], path + ".id", out id, out error) ||
@@ -382,11 +383,38 @@ namespace Vps.UnityClient.Api
                 !TryEnum(value["provenance"], path + ".provenance", out provenance, out error, "captured", "generated", "admin")) return false;
             if (value.Property("sourceMarkerId") != null &&
                 !TryUuid(value["sourceMarkerId"], path + ".sourceMarkerId", out sourceMarkerId, out error)) return false;
+            if (value.Property("description") != null &&
+                !TryOptionalDescription(value["description"], path + ".description", out description, out error)) return false;
             poi = new PublishedGraphPoiV2
             {
                 Id = id, Label = label, Category = category, IsActive = active,
-                NodeId = nodeId, AnchorLocal = point, Provenance = provenance, SourceMarkerId = sourceMarkerId
+                NodeId = nodeId, AnchorLocal = point, Provenance = provenance,
+                SourceMarkerId = sourceMarkerId, Description = description
             };
+            error = null;
+            return true;
+        }
+
+        private static bool TryOptionalDescription(JToken token, string path, out string value, out string error)
+        {
+            value = null;
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                error = null;
+                return true;
+            }
+            if (token.Type != JTokenType.String)
+            {
+                error = path + " must be a string or null.";
+                return false;
+            }
+            string raw = ((string)token).Trim();
+            if (raw.Length > 500)
+            {
+                error = path + " must be 500 characters or fewer.";
+                return false;
+            }
+            value = raw.Length == 0 ? null : raw;
             error = null;
             return true;
         }

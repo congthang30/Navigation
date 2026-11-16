@@ -11,8 +11,32 @@ namespace Vps.UnityClient.Navigation
     public sealed class DoraemonCompanionGuide : MonoBehaviour
     {
         public const float DefaultScale = 0.25f;
-        public const float DefaultGroundDrop = 0.08f;
-        public const float DefaultLeadDistance = 1.8f;
+
+        /// <summary>
+        /// How far the companion is sunk below the route plane (meters).
+        /// The navigation prefab pivot sits exactly on the mesh base (verified: the combined renderer
+        /// bounds start at local Y = 0), so only a very small sink is needed to hide the contact seam.
+        /// The previous 8 cm sink pushed the feet deep into the real floor, where AR depth noise
+        /// clipped them ("Doraemon bị cắt chân").
+        /// </summary>
+        public const float DefaultGroundDrop = 0.015f;
+
+        /// <summary>Legacy ground drop value, kept so persisted user settings can be migrated.</summary>
+        public const float LegacyDefaultGroundDrop = 0.08f;
+
+        /// <summary>
+        /// Metric depth priority offset applied to the bottom band of the companion (meters).
+        /// It only has to beat floor depth noise (a few centimeters), so it stays small enough that
+        /// the companion can never be seen through a wall.
+        /// </summary>
+        public const float DefaultContactDepthBiasMeters = 0.02f;
+
+        /// <summary>Height of the band (meters) over which the contact bias fades out.</summary>
+        public const float DefaultContactBandMeters = 0.06f;
+
+        public const float DefaultLeadDistance = 2.0f;
+        public const float LegacyDefaultLeadDistance = 1.8f;
+        public const float DestinationUnlockDistanceM = 3.5f;
         public const float DefaultWalkSpeed = 1.3f;
         public const float DefaultModelBrightness = 0.75f;
         public const float OffRouteRerouteThresholdM = 3.5f;
@@ -21,6 +45,10 @@ namespace Vps.UnityClient.Navigation
         private const float UserMoveStopMps = 0.10f;
         private const float WaitingReleaseLeadGapM = 0.42f;
 
+        private static readonly int ContactBiasPropId = Shader.PropertyToID("_ContactBiasMeters");
+        private static readonly int ContactBandPropId = Shader.PropertyToID("_ContactBandMeters");
+        private static readonly int ContactBaseWorldYPropId = Shader.PropertyToID("_ContactBaseWorldY");
+
         [SerializeField] private float groundDropMeters = DefaultGroundDrop;
         [SerializeField] private float companionScale = DefaultScale;
         [SerializeField] private float modelScaleMultiplier = 1f;
@@ -28,6 +56,8 @@ namespace Vps.UnityClient.Navigation
         [SerializeField] private float leadDistance = DefaultLeadDistance;
         [SerializeField] private float walkSpeed = DefaultWalkSpeed;
         [SerializeField] private float modelYawOffset = 0f;
+        [SerializeField] private float contactDepthBiasMeters = DefaultContactDepthBiasMeters;
+        [SerializeField] private float contactBandMeters = DefaultContactBandMeters;
 
         private GameObject doraemonInstance;
         private Renderer primaryRenderer;
@@ -56,6 +86,10 @@ namespace Vps.UnityClient.Navigation
         private Quaternion waitingFacingRotation;
         private bool hasWaitingFacingRotation;
         private Vector3 baseModelScale = Vector3.one;
+        private bool hasLockedDestination;
+        private Vector3 lockedDestinationRawPoint;
+        private Vector3 lockedDestinationGroundPoint;
+        private Vector3 lockedDestinationForward = Vector3.forward;
 
         private struct MaterialBrightnessState
         {
@@ -68,6 +102,9 @@ namespace Vps.UnityClient.Navigation
 
         private readonly System.Collections.Generic.List<MaterialBrightnessState> brightnessMaterials =
             new System.Collections.Generic.List<MaterialBrightnessState>();
+
+        private readonly System.Collections.Generic.List<Material> contactMaterials =
+            new System.Collections.Generic.List<Material>();
 
         public float GroundDropMeters
         {
@@ -107,6 +144,28 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        /// <summary>Contact depth bias applied to the bottom band of the companion (meters).</summary>
+        public float ContactDepthBiasMeters
+        {
+            get => contactDepthBiasMeters;
+            set
+            {
+                contactDepthBiasMeters = Mathf.Clamp(value, 0f, 0.1f);
+                ApplyContactBias();
+            }
+        }
+
+        /// <summary>Height of the band over which the contact depth bias fades out (meters).</summary>
+        public float ContactBandMeters
+        {
+            get => contactBandMeters;
+            set
+            {
+                contactBandMeters = Mathf.Clamp(value, 0.005f, 0.5f);
+                ApplyContactBias();
+            }
+        }
+
         public bool IsWaitingForUser => isWaitingForUser;
         public bool IsAtDestination => isAtDestination;
         public bool NeedsReroute => needsReroute;
@@ -130,6 +189,101 @@ namespace Vps.UnityClient.Navigation
         public GameObject CompanionInstance => doraemonInstance;
         public Light CompanionLight => doraemonInstance != null ? doraemonInstance.GetComponentInChildren<Light>(true) : null;
 
+        public bool TryGetCompanionWorldBounds(out Bounds bounds)
+        {
+            if (doraemonInstance == null || !doraemonInstance.activeInHierarchy)
+            {
+                bounds = default;
+                return false;
+            }
+
+            Renderer[] renderers = doraemonInstance.GetComponentsInChildren<Renderer>(false);
+            bool hasBounds = false;
+            bounds = default;
+            if (renderers != null)
+            {
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    Renderer r = renderers[i];
+                    if (r == null || !r.enabled) continue;
+                    if (!hasBounds)
+                    {
+                        bounds = r.bounds;
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(r.bounds);
+                    }
+                }
+            }
+
+            if (!hasBounds)
+            {
+                float h = 0.42f * modelScaleMultiplier;
+                float w = 0.30f * modelScaleMultiplier;
+                bounds = new Bounds(
+                    doraemonInstance.transform.position + Vector3.up * (h * 0.5f),
+                    new Vector3(w, h, w));
+            }
+
+            return true;
+        }
+
+        public bool TryGetSpeechAnchorWorldPosition(out Vector3 worldPos)
+        {
+            if (!TryGetCompanionWorldBounds(out Bounds bounds))
+            {
+                worldPos = Vector3.zero;
+                return false;
+            }
+
+            worldPos = new Vector3(bounds.center.x, bounds.max.y + 0.10f, bounds.center.z);
+            return true;
+        }
+
+        /// <summary>
+        /// Projects the robot speech anchor into UI-top-down viewport coordinates [0..1] ONLY when
+        /// the camera is actually looking at the robot inside the screen frame.
+        /// </summary>
+        public static bool TryProjectSpeechBubbleInCameraView(
+            Camera cam,
+            Bounds companionBounds,
+            Vector3 speechAnchorWorldPos,
+            out Vector2 bubbleViewportUiPos)
+        {
+            bubbleViewportUiPos = Vector2.zero;
+            if (cam == null || !cam.enabled || !cam.gameObject.activeInHierarchy)
+            {
+                return false;
+            }
+
+            Vector3 centerVp = cam.WorldToViewportPoint(companionBounds.center);
+            Vector3 headWorld = new Vector3(
+                companionBounds.center.x,
+                Mathf.Max(companionBounds.center.y, companionBounds.max.y - 0.08f),
+                companionBounds.center.z);
+            Vector3 headVp = cam.WorldToViewportPoint(headWorld);
+
+            if (!IsViewportPointInsideFrame(centerVp, cam.nearClipPlane) &&
+                !IsViewportPointInsideFrame(headVp, cam.nearClipPlane))
+            {
+                return false;
+            }
+
+            Vector3 anchorVp = cam.WorldToViewportPoint(speechAnchorWorldPos);
+            Vector3 chosen = anchorVp.z > Mathf.Max(0.10f, cam.nearClipPlane) ? anchorVp : centerVp;
+            bubbleViewportUiPos = new Vector2(chosen.x, 1f - chosen.y);
+            return true;
+        }
+
+        private static bool IsViewportPointInsideFrame(Vector3 vp, float nearClip)
+        {
+            return vp.z > Mathf.Max(0.15f, nearClip)
+                && vp.x >= 0.02f && vp.x <= 0.98f
+                && vp.y >= 0.02f && vp.y <= 0.98f;
+        }
+
         public void Initialize(Transform anchor, Camera camera)
         {
             trackedAnchor = anchor;
@@ -150,6 +304,20 @@ namespace Vps.UnityClient.Navigation
 
         public void SetRoute(Vector3[] anchorLocalPoints)
         {
+            Vector3[] incomingPoints = anchorLocalPoints ?? Array.Empty<Vector3>();
+            if (isAtDestination && hasLockedDestination && incomingPoints.Length > 0 &&
+                Vector3.Distance(incomingPoints[incomingPoints.Length - 1], lockedDestinationRawPoint) <= 0.5f)
+            {
+                // Keep the companion pinned cleanly at the arrived destination rather than sliding on route refreshes.
+                return;
+            }
+
+            if (isAtDestination && hasLockedDestination)
+            {
+                isAtDestination = false;
+                hasLockedDestination = false;
+            }
+
             Vector3 previousDoraemonPos = Vector3.zero;
             bool hadPreviousPos = false;
             // A valid previous route is enough: at the route start, distance is 0 but the model still has a live pose.
@@ -159,7 +327,7 @@ namespace Vps.UnityClient.Navigation
                 hadPreviousPos = true;
             }
 
-            rawRoutePoints = anchorLocalPoints ?? Array.Empty<Vector3>();
+            rawRoutePoints = incomingPoints;
             needsReroute = false;
             RebuildGroundPoints();
 
@@ -206,7 +374,8 @@ namespace Vps.UnityClient.Navigation
             isVisible = visible;
             if (doraemonInstance != null)
             {
-                doraemonInstance.SetActive(visible && groundPoints.Length >= 2);
+                bool hasRenderable = groundPoints.Length >= 2 || (isAtDestination && hasLockedDestination);
+                doraemonInstance.SetActive(visible && hasRenderable);
             }
             if (!visible)
             {
@@ -216,6 +385,21 @@ namespace Vps.UnityClient.Navigation
                 timeSinceStopped = 0f;
                 hasWaitingFacingRotation = false;
             }
+        }
+
+        public void ResetNavigationState()
+        {
+            isAtDestination = false;
+            isWaitingForUser = false;
+            needsReroute = false;
+            hasLockedDestination = false;
+            currentDistanceOnRoute = 0f;
+            userDistanceOnRoute = 0f;
+            hasLastUserPos = false;
+            userSpeed = 0f;
+            userIsMoving = false;
+            timeSinceStopped = 0f;
+            hasWaitingFacingRotation = false;
         }
 
         public void ResetRerouteFlag()
@@ -230,7 +414,42 @@ namespace Vps.UnityClient.Navigation
 
         public void UpdateCompanion(Vector3 anchorLocalUserPos, float dt)
         {
-            if (!isVisible || groundPoints.Length < 2 || totalRouteLength <= 0.001f)
+            if (!isVisible)
+            {
+                if (doraemonInstance != null && doraemonInstance.activeSelf)
+                {
+                    doraemonInstance.SetActive(false);
+                }
+                return;
+            }
+
+            if (dt <= 0.00001f) dt = 0.016f;
+
+            // Keep the robot anchored strictly on the destination point once arrived so it never slides/jitters.
+            if (isAtDestination && hasLockedDestination)
+            {
+                float distToLocked2D = Vector2.Distance(
+                    new Vector2(anchorLocalUserPos.x, anchorLocalUserPos.z),
+                    new Vector2(lockedDestinationRawPoint.x, lockedDestinationRawPoint.z));
+
+                if (distToLocked2D <= DestinationUnlockDistanceM)
+                {
+                    EnsureDoraemonModel();
+                    if (doraemonInstance != null && !doraemonInstance.activeSelf)
+                    {
+                        doraemonInstance.SetActive(true);
+                    }
+                    isWaitingForUser = false;
+                    needsReroute = false;
+                    PlaceDoraemonAt(lockedDestinationGroundPoint, lockedDestinationForward, anchorLocalUserPos, CompanionState.Arrived, dt);
+                    return;
+                }
+
+                isAtDestination = false;
+                hasLockedDestination = false;
+            }
+
+            if (groundPoints.Length < 2 || totalRouteLength <= 0.001f)
             {
                 if (doraemonInstance != null && doraemonInstance.activeSelf)
                 {
@@ -244,8 +463,6 @@ namespace Vps.UnityClient.Navigation
             {
                 doraemonInstance.SetActive(true);
             }
-
-            if (dt <= 0.00001f) dt = 0.016f;
 
             // 1. Track user horizontal movement speed in 2D (X, Z)
             Vector2 currUserPos2D = new Vector2(anchorLocalUserPos.x, anchorLocalUserPos.z);
@@ -276,13 +493,28 @@ namespace Vps.UnityClient.Navigation
                 needsReroute = true;
             }
 
-            // 3. Check if user reached destination
-            if (userDistanceOnRoute >= totalRouteLength - 0.45f)
+            // 3. Check if user reached arrival distance (2.0m ahead by default) without overshooting past the destination
+            float arrivalTriggerDistance = Mathf.Max(0.45f, leadDistance);
+            Vector3 destRaw = rawRoutePoints[rawRoutePoints.Length - 1];
+            Vector3 destGround = groundPoints[groundPoints.Length - 1];
+            float horizontalDistToDest = Vector2.Distance(
+                currUserPos2D,
+                new Vector2(destGround.x, destGround.z));
+            float remainingOnRoute = totalRouteLength - userDistanceOnRoute;
+
+            if (remainingOnRoute <= arrivalTriggerDistance && horizontalDistToDest <= arrivalTriggerDistance + 0.75f)
             {
                 isAtDestination = true;
                 isWaitingForUser = false;
+                needsReroute = false;
                 currentDistanceOnRoute = totalRouteLength;
-                PlaceDoraemon(currentDistanceOnRoute, anchorLocalUserPos, CompanionState.Arrived, dt);
+                hasLockedDestination = true;
+                lockedDestinationRawPoint = destRaw;
+                lockedDestinationGroundPoint = destGround;
+                SamplePath(totalRouteLength, out _, out Vector3 endTangent);
+                Vector3 flatForward = new Vector3(endTangent.x, 0f, endTangent.z);
+                lockedDestinationForward = flatForward.sqrMagnitude > 0.001f ? flatForward.normalized : Vector3.forward;
+                PlaceDoraemonAt(lockedDestinationGroundPoint, lockedDestinationForward, anchorLocalUserPos, CompanionState.Arrived, dt);
                 return;
             }
 
@@ -346,11 +578,17 @@ namespace Vps.UnityClient.Navigation
             if (doraemonInstance == null) return;
 
             SamplePath(distance, out Vector3 position, out Vector3 tangent);
+            Vector3 forward = new Vector3(tangent.x, 0f, tangent.z).normalized;
+            if (forward.sqrMagnitude < 0.001f) forward = Vector3.forward;
+            PlaceDoraemonAt(position, forward, userPos, state, dt);
+        }
+
+        private void PlaceDoraemonAt(Vector3 position, Vector3 forward, Vector3 userPos, CompanionState state, float dt)
+        {
+            if (doraemonInstance == null) return;
 
             // Ground contact offset: 0.005m higher than line so model feet cleanly sit on top of line
             position.y += 0.005f;
-
-            Vector3 forward = new Vector3(tangent.x, 0f, tangent.z).normalized;
             if (forward.sqrMagnitude < 0.001f) forward = Vector3.forward;
 
             if (state == CompanionState.Waiting)
@@ -406,10 +644,21 @@ namespace Vps.UnityClient.Navigation
                 doraemonInstance.transform.localRotation = Quaternion.Slerp(
                     doraemonInstance.transform.localRotation, targetRot, dt * 6f);
             }
+
+            // The contact bias band is anchored to the world position of the model base.
+            UpdateContactBaseWorldY();
         }
 
         private void RebuildGroundPoints()
         {
+            if (hasLockedDestination)
+            {
+                lockedDestinationGroundPoint = new Vector3(
+                    lockedDestinationRawPoint.x,
+                    lockedDestinationRawPoint.y - groundDropMeters,
+                    lockedDestinationRawPoint.z);
+            }
+
             if (rawRoutePoints == null || rawRoutePoints.Length == 0)
             {
                 groundPoints = Array.Empty<Vector3>();
@@ -624,6 +873,9 @@ namespace Vps.UnityClient.Navigation
             float largestVolume = -1f;
             primaryRenderer = null;
             brightnessMaterials.Clear();
+            contactMaterials.Clear();
+
+            Shader companionShader = ResolveCompanionShader();
 
             foreach (Renderer r in renderers)
             {
@@ -638,7 +890,9 @@ namespace Vps.UnityClient.Navigation
 
                 // Ensure world-space companion materials participate in hardware depth testing (ZTest LEqual, ZWrite On)
                 // so real-world walls, pillars, chairs, and people accurately occlude the companion partially or fully.
-                Material[] mats = Application.isPlaying ? r.materials : r.sharedMaterials;
+                // Material instances (not shared assets) are used so the runtime shader swap and the
+                // contact bias never modify the imported navigation prefab materials.
+                Material[] mats = ResolveEditableMaterials(r);
                 if (mats == null) continue;
                 for (int i = 0; i < mats.Length; i++)
                 {
@@ -652,6 +906,14 @@ namespace Vps.UnityClient.Navigation
                         if (fallback != null) mat.shader = fallback;
                     }
 
+                    // The built-in Standard shader exposes no depth offset property, so the companion
+                    // is rendered with a dedicated shader that supports a metric, contact-only depth
+                    // bias (the feet win against floor depth noise, the body keeps exact occlusion).
+                    if (companionShader != null && mat.shader != companionShader)
+                    {
+                        mat.shader = companionShader;
+                    }
+
                     if (mat.HasProperty("_ZWrite")) mat.SetInt("_ZWrite", 1);
                     if (mat.HasProperty("_ZTest")) mat.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.LessEqual);
                     if (mat.renderQueue < 2000 || mat.renderQueue >= 3000)
@@ -659,11 +921,86 @@ namespace Vps.UnityClient.Navigation
                         mat.renderQueue = 2000;
                     }
 
+                    if (mat.HasProperty(ContactBiasPropId)) mat.SetFloat(ContactBiasPropId, contactDepthBiasMeters);
+                    if (mat.HasProperty(ContactBandPropId)) mat.SetFloat(ContactBandPropId, contactBandMeters);
+                    contactMaterials.Add(mat);
+
                     if (Application.isPlaying) CaptureBrightnessState(mat);
                 }
             }
 
             if (Application.isPlaying) ApplyModelBrightness();
+            UpdateContactBaseWorldY();
+        }
+
+        /// <summary>
+        /// Resolves the shader used by the companion. Falls back to the built-in Standard shader when
+        /// the dedicated occlusion shader is not available so the companion is never invisible.
+        /// </summary>
+        private static Shader ResolveCompanionShader()
+        {
+            Shader shader = Shader.Find("Vps/ARCompanionOcclusion");
+            if (shader == null) shader = Shader.Find("Standard");
+            if (shader == null) shader = Shader.Find("Mobile/Diffuse");
+            return shader;
+        }
+
+        /// <summary>
+        /// Returns material instances that can be modified safely.
+        /// At runtime <see cref="Renderer.materials"/> is used. In edit mode that getter logs an error
+        /// and leaks instances into the scene, so explicit copies are created and assigned instead.
+        /// </summary>
+        private static Material[] ResolveEditableMaterials(Renderer renderer)
+        {
+            if (renderer == null) return null;
+
+            if (Application.isPlaying)
+            {
+                return renderer.materials;
+            }
+
+            Material[] shared = renderer.sharedMaterials;
+            if (shared == null || shared.Length == 0) return null;
+
+            Material[] instances = new Material[shared.Length];
+            for (int i = 0; i < shared.Length; i++)
+            {
+                instances[i] = shared[i] != null ? new Material(shared[i]) : null;
+            }
+            renderer.sharedMaterials = instances;
+            return instances;
+        }
+
+        /// <summary>
+        /// Applies the current contact bias values to the companion materials.
+        /// </summary>
+        private void ApplyContactBias()
+        {
+            for (int i = 0; i < contactMaterials.Count; i++)
+            {
+                Material mat = contactMaterials[i];
+                if (mat == null) continue;
+                if (mat.HasProperty(ContactBiasPropId)) mat.SetFloat(ContactBiasPropId, contactDepthBiasMeters);
+                if (mat.HasProperty(ContactBandPropId)) mat.SetFloat(ContactBandPropId, contactBandMeters);
+            }
+            UpdateContactBaseWorldY();
+        }
+
+        /// <summary>
+        /// Updates the world-space Y of the model base used by the contact bias band. The navigation
+        /// prefab pivot sits on the mesh base, so the instance position is the contact reference.
+        /// </summary>
+        private void UpdateContactBaseWorldY()
+        {
+            if (doraemonInstance == null || contactMaterials.Count == 0) return;
+
+            float baseWorldY = doraemonInstance.transform.position.y;
+            for (int i = 0; i < contactMaterials.Count; i++)
+            {
+                Material mat = contactMaterials[i];
+                if (mat == null) continue;
+                if (mat.HasProperty(ContactBaseWorldYPropId)) mat.SetFloat(ContactBaseWorldYPropId, baseWorldY);
+            }
         }
 
         private static readonly int BaseColorPropertyId = Shader.PropertyToID("_BaseColor");

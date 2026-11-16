@@ -34,6 +34,8 @@ namespace Vps.UnityClient.Navigation
         private const double RouteRefreshSeconds = 0.35d;
         private const float MaximumSnapDistanceM = 2.5f;
         private const float DefaultRouteHue = 0.52f;
+        /// <summary>Legacy route depth bias that is migrated to the new safe default on load.</summary>
+        private const float LegacyRouteDepthBiasMeters = 0.18f;
         private const string SettingsPrefix = "VPS.Navigation.Settings.";
 
         private static readonly Color[] RouteColorOptions =
@@ -54,6 +56,7 @@ namespace Vps.UnityClient.Navigation
         private enum OcclusionToggle
         {
             SmoothEdges,
+            StableOcclusionDistance,
             SemanticSuppression,
             SuppressGround,
             DepthVisualization,
@@ -89,6 +92,8 @@ namespace Vps.UnityClient.Navigation
         private Material ownedMaterial;
         private DoraemonCompanionGuide companionGuide;
         private ArOcclusionController occlusionController;
+        private GoogleTextToSpeechService ttsService;
+        private string lastAutoSpokenArrivalKey;
         private Vector3[] currentRoutePoints = Array.Empty<Vector3>();
         private bool lineFlatOnGround = true;
         private float routeLineWidth = 0.22f;
@@ -101,6 +106,24 @@ namespace Vps.UnityClient.Navigation
         private Vector2 settingsScrollPosition;
         private string poiSearchQuery = string.Empty;
         private NianticAccessTokenProvider nianticAccessTokenProvider;
+
+        // Offline AR authoring state (no backend required)
+        private bool authoringMode;
+        private bool isRecordingRoute;
+        private readonly List<Vector3> recordedFloorPoints = new List<Vector3>();
+        private float walkStartCamY;
+        private float walkStartFloorY;
+        private bool hasWalkStartCamY;
+        private Vector3 pendingPoiFloorPoint;
+        private bool hasPendingPoiLocation;
+        private Vector3[] pendingWalkSnapshot = Array.Empty<Vector3>();
+        private Vector3 currentAuthoringFloorPoint;
+        private float currentAuthoringSnapDistance = float.MaxValue;
+        private readonly List<LineRenderer> authoringExistingEdgeLines = new List<LineRenderer>();
+        private LineRenderer authoringWalkTrailLine;
+        private Material authoringExistingMaterial;
+        private Material authoringWalkMaterial;
+        private const float AuthoringWalkSpacingMeters = 0.35f;
 
         [Header("UI Presentation")]
         [SerializeField] private bool useUiToolkit = true;
@@ -280,7 +303,7 @@ namespace Vps.UnityClient.Navigation
                 var guide = EnsureCompanionGuide();
                 if (guide != null)
                 {
-                    guide.GroundDropMeters = Mathf.Clamp(value, 0f, 0.4f);
+                    guide.GroundDropMeters = Mathf.Clamp(value, 0f, 0.15f);
                     SaveUserSettings(false);
                 }
             }
@@ -301,6 +324,58 @@ namespace Vps.UnityClient.Navigation
                     occ.SetQualityMode(value);
                     SaveUserSettings(false);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Enables the app side robust occlusion reference distance (median + temporal smoothing).
+        /// Disabling it restores the NSDK default (closest depth sample of the field of view).
+        /// </summary>
+        public bool StabilizedOcclusionDistance
+        {
+            get
+            {
+                var occ = EnsureOcclusionController();
+                return occ != null && occ.UseStabilizedOcclusionDistance;
+            }
+            set
+            {
+                var occ = EnsureOcclusionController();
+                if (occ != null)
+                {
+                    occ.UseStabilizedOcclusionDistance = value;
+                    SaveUserSettings(false);
+                }
+            }
+        }
+
+        /// <summary>Live occlusion diagnostics (graphics API, depth mode, reference plane, fallback reason).</summary>
+        public string OcclusionDiagnostics
+        {
+            get
+            {
+                var occ = EnsureOcclusionController();
+                return occ != null ? occ.DiagnosticsReport : string.Empty;
+            }
+        }
+
+        /// <summary>Reason why the effective occlusion mode differs from the requested one.</summary>
+        public string OcclusionFallbackReason
+        {
+            get
+            {
+                var occ = EnsureOcclusionController();
+                return occ != null ? occ.FallbackReason : string.Empty;
+            }
+        }
+
+        /// <summary>The occlusion mode that is actually active (may differ from the requested one).</summary>
+        public ArOcclusionQualityMode EffectiveOcclusionMode
+        {
+            get
+            {
+                var occ = EnsureOcclusionController();
+                return occ != null ? occ.EffectiveMode : ArOcclusionQualityMode.Off;
             }
         }
 
@@ -360,6 +435,77 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        private GoogleTextToSpeechService EnsureTtsService()
+        {
+            if (ttsService == null)
+            {
+                ttsService = GetComponent<GoogleTextToSpeechService>();
+                if (ttsService == null) ttsService = gameObject.AddComponent<GoogleTextToSpeechService>();
+            }
+            return ttsService;
+        }
+
+        public GoogleTextToSpeechService TtsService => EnsureTtsService();
+
+        public bool TtsEnabled
+        {
+            get => EnsureTtsService().Enabled;
+            set
+            {
+                EnsureTtsService().Enabled = value;
+                SaveUserSettings(false);
+            }
+        }
+
+        public float TtsSpeakingRate
+        {
+            get => EnsureTtsService().SpeakingRate;
+            set
+            {
+                EnsureTtsService().SpeakingRate = value;
+                SaveUserSettings(false);
+            }
+        }
+
+        public string TtsCloudApiKey
+        {
+            get => EnsureTtsService().CloudApiKey;
+            set
+            {
+                EnsureTtsService().CloudApiKey = value;
+                SaveUserSettings(false);
+            }
+        }
+
+        public string TtsStatusSummary => EnsureTtsService().StatusSummary;
+        public bool IsTtsSpeaking => ttsService != null && ttsService.IsSpeaking;
+
+        public static string BuildArrivalSpeechText(string destinationLabel, string destinationDescription)
+        {
+            string cleanLabel = string.IsNullOrWhiteSpace(destinationLabel) ? string.Empty : destinationLabel.Trim();
+            if (!string.IsNullOrWhiteSpace(destinationDescription))
+            {
+                string cleanDesc = destinationDescription.Trim();
+                return string.IsNullOrEmpty(cleanLabel) ? cleanDesc : $"Đã tới {cleanLabel}. {cleanDesc}";
+            }
+
+            return string.IsNullOrEmpty(cleanLabel) ? "Bạn đã tới điểm đích!" : $"Bạn đã đến {cleanLabel}!";
+        }
+
+        public void OnReplayArrivalSpeechRequested()
+        {
+            PublishedGraphPoiV2 destPoi = FindActivePoi(!string.IsNullOrEmpty(activeRoutedPoiId) ? activeRoutedPoiId : selectedPoiId);
+            string destLabel = destPoi != null ? CapitalizeFirst(destPoi.Label) : "Điểm đến";
+            string destDesc = destPoi != null ? destPoi.Description : null;
+            string speechText = BuildArrivalSpeechText(destLabel, destDesc);
+            EnsureTtsService().SpeakManual(speechText);
+        }
+
+        public void OnTestTtsRequested()
+        {
+            EnsureTtsService().SpeakManual("Xin chào, tôi là Robot dẫn đường. Hệ thống giọng nói Google đang sẵn sàng.");
+        }
+
         public bool MeshDebugOcclusion
         {
             get
@@ -410,6 +556,10 @@ namespace Vps.UnityClient.Navigation
 
         public void OnPoiSelected(string poiId)
         {
+            if (!string.Equals(selectedPoiId, poiId, StringComparison.Ordinal))
+            {
+                lastAutoSpokenArrivalKey = null;
+            }
             selectedPoiId = poiId;
             VpsSystemDiagnostics.Record("INPUT", "destination row selected: " + poiId);
             uiToolkitController?.PopulatePois(visiblePois, selectedPoiId);
@@ -418,7 +568,13 @@ namespace Vps.UnityClient.Navigation
         public void OnStartNavigationRequested()
         {
             VpsSystemDiagnostics.Record("INPUT", "button callback: Start navigation (UI Toolkit)");
+            authoringMode = false;
+            isRecordingRoute = false;
+            recordedFloorPoints.Clear();
             panelOpen = false;
+            lastAutoSpokenArrivalKey = null;
+            ttsService?.Stop();
+            companionGuide?.ResetNavigationState();
             uiToolkitController?.CloseDestinationPickerModal();
             StartCoroutine(RefreshAndTrack());
         }
@@ -444,6 +600,236 @@ namespace Vps.UnityClient.Navigation
             SaveUserSettings(true);
         }
 
+        public void OnOpenMapEditorClicked()
+        {
+            panelOpen = false;
+            uiToolkitController?.CloseDestinationPickerModal();
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            RefreshPois();
+            uiToolkitController?.OpenMapEditorModal(activePois, bootstrap != null && bootstrap.IsUsingLocalOverride);
+        }
+
+        public void OnMapEditorClosed()
+        {
+        }
+
+        public void OnStartArAuthoringRequested()
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (trackingRequestAccepted) StopNavigation();
+            panelOpen = false;
+            authoringMode = true;
+            isRecordingRoute = false;
+            recordedFloorPoints.Clear();
+            hasWalkStartCamY = false;
+            hasPendingPoiLocation = false;
+            pendingWalkSnapshot = Array.Empty<Vector3>();
+            status = "Đưa camera quanh phòng để định vị trước khi thêm điểm đến.";
+            StartCoroutine(RefreshAndTrack());
+        }
+
+        public void OnStopArAuthoringRequested()
+        {
+            StopNavigation();
+        }
+
+        public void OnToggleAuthoringWalkRequested()
+        {
+            if (!authoringMode || !stableTracking || trackedAnchor == null || arCamera == null) return;
+            if (isRecordingRoute)
+            {
+                isRecordingRoute = false;
+                recordedFloorPoints.Clear();
+                hasWalkStartCamY = false;
+                status = "Đã hủy đoạn ghi đường. Bạn có thể ghi lại hoặc đặt điểm tại đây.";
+                UpdateAuthoringPreviewRenderers();
+                return;
+            }
+
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            Vector3 localCam = trackedAnchor.InverseTransformPoint(arCamera.transform.position);
+            walkStartCamY = localCam.y;
+            walkStartFloorY = LocalSiteGraphStore.EstimateFloorHeight(bootstrap != null ? bootstrap.Manifest : null, localCam);
+            hasWalkStartCamY = true;
+            isRecordingRoute = true;
+            recordedFloorPoints.Clear();
+
+            if (TryGetCurrentAuthoringFloorPoint(out Vector3 startFloor))
+            {
+                recordedFloorPoints.Add(startFloor);
+            }
+            status = "Đang ghi lộ trình: hãy đi bộ tới vị trí điểm đến mới.";
+            UpdateAuthoringPreviewRenderers();
+        }
+
+        public void OnOpenMarkPoiFormRequested()
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            hasPendingPoiLocation = TryGetCurrentAuthoringFloorPoint(out pendingPoiFloorPoint);
+            pendingWalkSnapshot = isRecordingRoute ? recordedFloorPoints.ToArray() : Array.Empty<Vector3>();
+            string summary = BuildAuthoringConnectionSummary();
+            uiToolkitController?.OpenPoiFormForNew(summary);
+        }
+
+        public bool OnSaveNewPoiRequested(string label, string category, out string error)
+        {
+            return OnSaveNewPoiRequested(label, category, null, out error);
+        }
+
+        public bool OnSaveNewPoiRequested(string label, string category, string description, out string error)
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (bootstrap == null || bootstrap.Manifest == null)
+            {
+                error = "Bản đồ chưa được tải.";
+                return false;
+            }
+
+            Vector3 targetPoint;
+            if (hasPendingPoiLocation)
+            {
+                targetPoint = pendingPoiFloorPoint;
+            }
+            else if (!TryGetCurrentAuthoringFloorPoint(out targetPoint))
+            {
+                error = "Chưa định vị xong không gian AR để lấy tọa độ điểm đến.";
+                return false;
+            }
+
+            if (!LocalSiteGraphStore.AddPoiWithRoute(
+                    bootstrap.Manifest,
+                    label,
+                    category,
+                    description,
+                    targetPoint,
+                    pendingWalkSnapshot,
+                    out PublishedSiteGraphManifest updated,
+                    out PublishedGraphPoiV2 addedPoi,
+                    out error))
+            {
+                return false;
+            }
+
+            if (!bootstrap.ApplyAndSaveLocalManifest(updated, out error))
+            {
+                return false;
+            }
+
+            isRecordingRoute = false;
+            recordedFloorPoints.Clear();
+            hasWalkStartCamY = false;
+            hasPendingPoiLocation = false;
+            pendingWalkSnapshot = Array.Empty<Vector3>();
+            selectedPoiId = addedPoi.Id;
+            RefreshPois();
+            UpdateAuthoringPreviewRenderers();
+            status = $"Đã lưu điểm đến '{CapitalizeFirst(addedPoi.Label)}'. Có thể thêm tiếp hoặc bấm Hoàn tất.";
+            return true;
+        }
+
+        public bool OnUpdateExistingPoiRequested(string poiId, string label, string category, out string error)
+        {
+            return OnUpdateExistingPoiRequestedInternal(poiId, label, category, null, false, out error);
+        }
+
+        public bool OnUpdateExistingPoiRequested(string poiId, string label, string category, string description, out string error)
+        {
+            return OnUpdateExistingPoiRequestedInternal(poiId, label, category, description, true, out error);
+        }
+
+        private bool OnUpdateExistingPoiRequestedInternal(
+            string poiId,
+            string label,
+            string category,
+            string description,
+            bool updateDescription,
+            out string error)
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (bootstrap == null || bootstrap.Manifest == null)
+            {
+                error = "Bản đồ chưa được tải.";
+                return false;
+            }
+
+            bool ok = updateDescription
+                ? LocalSiteGraphStore.UpdatePoi(bootstrap.Manifest, poiId, label, category, description, out PublishedSiteGraphManifest updated, out error)
+                : LocalSiteGraphStore.UpdatePoi(bootstrap.Manifest, poiId, label, category, out updated, out error);
+
+            if (!ok)
+            {
+                return false;
+            }
+
+            if (!bootstrap.ApplyAndSaveLocalManifest(updated, out error))
+            {
+                return false;
+            }
+
+            RefreshPois();
+            uiToolkitController?.RefreshMapEditorList(
+                activePois,
+                bootstrap.IsUsingLocalOverride,
+                $"Đã cập nhật điểm đến '{CapitalizeFirst(label.Trim())}'.",
+                false);
+            return true;
+        }
+
+        public void OnDeleteExistingPoiRequested(string poiId)
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (bootstrap == null || bootstrap.Manifest == null) return;
+
+            if (!LocalSiteGraphStore.DeletePoi(bootstrap.Manifest, poiId, out PublishedSiteGraphManifest updated, out string error))
+            {
+                uiToolkitController?.ShowMapEditorFeedback(error, true);
+                return;
+            }
+
+            if (!bootstrap.ApplyAndSaveLocalManifest(updated, out error))
+            {
+                uiToolkitController?.ShowMapEditorFeedback(error, true);
+                return;
+            }
+
+            RefreshPois();
+            uiToolkitController?.RefreshMapEditorList(
+                activePois,
+                bootstrap.IsUsingLocalOverride,
+                "Đã xóa điểm đến khỏi bản đồ trên máy.",
+                false);
+        }
+
+        public void OnExportManifestJsonRequested()
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (bootstrap == null || bootstrap.Manifest == null)
+            {
+                uiToolkitController?.ShowMapEditorFeedback("Chưa có dữ liệu bản đồ để sao chép.", true);
+                return;
+            }
+
+            string json = LocalSiteGraphStore.SerializeManifestJson(bootstrap.Manifest, true);
+            GUIUtility.systemCopyBuffer = json;
+            uiToolkitController?.ShowMapEditorFeedback(
+                $"Đã sao chép JSON ({activePois.Count} điểm đến) vào bộ nhớ tạm.",
+                false);
+        }
+
+        public void OnResetLocalManifestRequested()
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (bootstrap == null) return;
+
+            bootstrap.ResetLocalManifestToDefault();
+            RefreshPois();
+            uiToolkitController?.RefreshMapEditorList(
+                activePois,
+                bootstrap.IsUsingLocalOverride,
+                "Đã khôi phục bản đồ mặc định ban đầu.",
+                false);
+        }
+
         private string BuildDiagnosticsSummary()
         {
             if (occlusionController == null) return "Depth subsystem chưa kết nối";
@@ -454,7 +840,7 @@ namespace Vps.UnityClient.Navigation
                 occlusionController.AllocatedMemoryMb,
                 occlusionController.IsDepthSubsystemAvailable ? "Sẵn sàng" : "Chưa khả dụng",
                 GetQualityModeLabel(occlusionController.EffectiveMode),
-                occlusionController.ActiveSubsystemSummary);
+                occlusionController.DiagnosticsReport);
         }
 
         private void Start()
@@ -523,7 +909,10 @@ namespace Vps.UnityClient.Navigation
             if (companionGuide == null) companionGuide = gameObject.AddComponent<DoraemonCompanionGuide>();
             occlusionController = GetComponent<ArOcclusionController>();
             if (occlusionController == null) occlusionController = gameObject.AddComponent<ArOcclusionController>();
+            ttsService = GetComponent<GoogleTextToSpeechService>();
+            if (ttsService == null) ttsService = gameObject.AddComponent<GoogleTextToSpeechService>();
             LoadUserSettings();
+            ttsService.Prewarm();
             RefreshPois();
         }
 
@@ -548,10 +937,11 @@ namespace Vps.UnityClient.Navigation
 
         private void Update()
         {
-            IsAnyNavigating = trackingRequestAccepted || panelOpen || settingsOpen;
+            bool editorModalOpen = uiToolkitController != null && (uiToolkitController.IsMapEditorOpen || uiToolkitController.IsPoiFormOpen);
+            IsAnyNavigating = trackingRequestAccepted || panelOpen || settingsOpen || editorModalOpen;
             VpsSystemDiagnostics.SetState("Navigation UI", "destinationPicker=" + panelOpen + " settings=" + settingsOpen +
-                " busy=" + sitesBusy + " startPending=" + startPending + " trackingAccepted=" + trackingRequestAccepted +
-                " stable=" + stableTracking);
+                " authoring=" + authoringMode + " busy=" + sitesBusy + " startPending=" + startPending +
+                " trackingAccepted=" + trackingRequestAccepted + " stable=" + stableTracking);
             string trackingState = localizationAdapter == null ? "adapter missing" : localizationAdapter.CurrentTrackingState.ToString();
             if (!string.Equals(lastDiagnosticsTrackingState, trackingState, StringComparison.Ordinal))
             {
@@ -570,6 +960,7 @@ namespace Vps.UnityClient.Navigation
                 trackedSince = 0d;
                 stableTracking = false;
                 SetRouteVisible(false);
+                SetAuthoringPreviewVisible(false);
                 status = "VPS2 Tracking bị gián đoạn; tuyến đã ẩn. Hãy lia camera quanh phòng để nhận diện lại.";
                 return;
             }
@@ -579,7 +970,20 @@ namespace Vps.UnityClient.Navigation
             if (!stableTracking)
             {
                 SetRouteVisible(false);
+                SetAuthoringPreviewVisible(false);
                 status = "Đang dò không gian... Hãy lia camera quanh phòng để chốt vị trí.";
+                return;
+            }
+            if (authoringMode)
+            {
+                SetRouteVisible(false);
+                if (!wasStable)
+                {
+                    status = isRecordingRoute
+                        ? "Tracking ổn định trở lại. Tiếp tục đi tới điểm đến mới."
+                        : "Đã khóa không gian. Bấm Bắt đầu ghi đường hoặc Đặt điểm tại đây.";
+                }
+                UpdateAuthoringSession();
                 return;
             }
             if (!wasStable) lastRouteUpdate = 0d;
@@ -592,19 +996,71 @@ namespace Vps.UnityClient.Navigation
             {
                 companionGuide.UpdateCompanion(trackedAnchor.InverseTransformPoint(arCamera.transform.position));
             }
+            UpdateArrivalSpeechTrigger();
+        }
+
+        private void UpdateArrivalSpeechTrigger()
+        {
+            bool isNavigating = !authoringMode && trackingRequestAccepted && stableTracking && activeRoutedPoiId != null;
+            bool isArrived = isNavigating && companionGuide != null && companionGuide.IsAtDestination;
+            if (!isArrived)
+            {
+                if (!isNavigating || (companionGuide != null && !companionGuide.IsAtDestination))
+                {
+                    lastAutoSpokenArrivalKey = null;
+                }
+                return;
+            }
+
+            PublishedGraphPoiV2 destPoi = FindActivePoi(activeRoutedPoiId);
+            string destLabel = destPoi != null ? CapitalizeFirst(destPoi.Label) : "Điểm đến";
+            string destDesc = destPoi != null ? destPoi.Description : null;
+            string speechText = BuildArrivalSpeechText(destLabel, destDesc);
+            string arrivalKey = activeRoutedPoiId + "|" + speechText;
+            if (string.Equals(lastAutoSpokenArrivalKey, arrivalKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            lastAutoSpokenArrivalKey = arrivalKey;
+            if (TtsEnabled)
+            {
+                EnsureTtsService().Speak(speechText);
+            }
         }
 
         private void LateUpdate()
         {
             if (useUiToolkit && uiToolkitController != null && uiToolkitController.IsActive)
             {
-                bool isNavigating = trackingRequestAccepted && stableTracking && activeRoutedPoiId != null;
+                bool isNavigating = !authoringMode && trackingRequestAccepted && stableTracking && activeRoutedPoiId != null;
                 PublishedGraphPoiV2 destPoi = FindActivePoi(isNavigating ? activeRoutedPoiId : selectedPoiId);
                 string destLabel = destPoi != null ? CapitalizeFirst(destPoi.Label) : "Điểm đến";
+                string destDesc = destPoi != null ? destPoi.Description : null;
+                bool isArrived = companionGuide != null && companionGuide.IsAtDestination;
                 float totalLen = companionGuide != null ? companionGuide.TotalRouteLength : 0f;
                 float userDist = companionGuide != null ? companionGuide.UserDistanceOnRoute : 0f;
                 float remainingLen = companionGuide != null ? Mathf.Max(0f, totalLen - userDist) : 0f;
                 string compMsg = companionGuide != null ? companionGuide.CompanionStatusMessage : "Đi theo Robot và dải dẫn hướng trên sàn.";
+                if (isArrived && !string.IsNullOrWhiteSpace(destDesc))
+                {
+                    compMsg = $"Chào mừng bạn đến {destLabel}!";
+                }
+
+                bool hasRobotAnchor = false;
+                bool robotInFront = false;
+                Vector2 robotViewportPos = Vector2.zero;
+                if (isNavigating && isArrived && arCamera != null && companionGuide != null &&
+                    companionGuide.TryGetCompanionWorldBounds(out Bounds companionBounds) &&
+                    companionGuide.TryGetSpeechAnchorWorldPosition(out Vector3 speechWorldPos))
+                {
+                    hasRobotAnchor = true;
+                    robotInFront = DoraemonCompanionGuide.TryProjectSpeechBubbleInCameraView(
+                        arCamera,
+                        companionBounds,
+                        speechWorldPos,
+                        out robotViewportPos);
+                }
 
                 var state = new NavigationUiState
                 {
@@ -612,12 +1068,13 @@ namespace Vps.UnityClient.Navigation
                     IsStableTracking = stableTracking,
                     IsNavigating = isNavigating,
                     DestinationLabel = destLabel,
+                    DestinationDescription = destDesc,
                     RouteRemainingMeters = remainingLen,
                     TotalRouteMeters = totalLen,
                     CompanionMessage = compMsg,
                     IsCompanionWaiting = companionGuide != null && companionGuide.IsWaitingForUser,
                     IsCompanionRerouting = companionGuide != null && companionGuide.NeedsReroute,
-                    IsArrived = companionGuide != null && companionGuide.IsAtDestination,
+                    IsArrived = isArrived,
                     DiagnosticsText = BuildDiagnosticsSummary(),
                     StatusMessage = status,
                     BootstrapState = bootstrap != null ? bootstrap.State : NavigationBootstrapState.ManifestLoaded,
@@ -630,6 +1087,18 @@ namespace Vps.UnityClient.Navigation
                     MemoryMb = occlusionController != null ? occlusionController.AllocatedMemoryMb : 0f,
                     DepthAvailable = occlusionController != null && occlusionController.IsDepthSubsystemAvailable,
                     EffectiveOcclusionMode = occlusionController != null ? occlusionController.EffectiveMode : ArOcclusionQualityMode.Off,
+                    IsAuthoringMode = authoringMode,
+                    IsRecordingWalk = isRecordingRoute,
+                    RecordedWalkMeters = ComputeRecordedWalkLength(),
+                    RecordedPointCount = recordedFloorPoints.Count,
+                    NearestGraphDistanceMeters = currentAuthoringSnapDistance,
+                    CurrentAnchorLocalPos = currentAuthoringFloorPoint,
+                    IsUsingLocalManifest = bootstrap != null && bootstrap.IsUsingLocalOverride,
+                    HasRobotBubbleAnchor = hasRobotAnchor,
+                    IsRobotInFrontOfCamera = robotInFront,
+                    RobotBubbleViewportPos = robotViewportPos,
+                    IsTtsSpeaking = ttsService != null && ttsService.IsSpeaking,
+                    TtsStatusSummary = ttsService != null ? ttsService.StatusSummary : string.Empty,
                 };
 
                 uiToolkitController.UpdateState(in state);
@@ -832,8 +1301,22 @@ namespace Vps.UnityClient.Navigation
             {
                 companionGuide.ModelScaleMultiplier = PlayerPrefs.GetFloat(SettingsPrefix + "ModelScale", 1f);
                 companionGuide.ModelBrightness = PlayerPrefs.GetFloat(SettingsPrefix + "ModelBrightness", DoraemonCompanionGuide.DefaultModelBrightness);
-                companionGuide.LeadDistance = PlayerPrefs.GetFloat(SettingsPrefix + "LeadDistance", DoraemonCompanionGuide.DefaultLeadDistance);
-                companionGuide.GroundDropMeters = PlayerPrefs.GetFloat(SettingsPrefix + "GroundDrop", DoraemonCompanionGuide.DefaultGroundDrop);
+
+                float storedLeadDistance = PlayerPrefs.GetFloat(SettingsPrefix + "LeadDistance", DoraemonCompanionGuide.DefaultLeadDistance);
+                if (Mathf.Abs(storedLeadDistance - DoraemonCompanionGuide.LegacyDefaultLeadDistance) < 0.0005f)
+                {
+                    storedLeadDistance = DoraemonCompanionGuide.DefaultLeadDistance;
+                }
+                companionGuide.LeadDistance = storedLeadDistance;
+
+                // Migrate the legacy 8 cm ground drop: it sank the companion feet into the real floor,
+                // where AR depth noise clipped them. Only a value the user explicitly changed is kept.
+                float storedGroundDrop = PlayerPrefs.GetFloat(SettingsPrefix + "GroundDrop", DoraemonCompanionGuide.DefaultGroundDrop);
+                if (Mathf.Abs(storedGroundDrop - DoraemonCompanionGuide.LegacyDefaultGroundDrop) < 0.0005f)
+                {
+                    storedGroundDrop = DoraemonCompanionGuide.DefaultGroundDrop;
+                }
+                companionGuide.GroundDropMeters = storedGroundDrop;
             }
 
             if (occlusionController != null)
@@ -846,7 +1329,26 @@ namespace Vps.UnityClient.Navigation
                 occlusionController.SuppressGroundChannel = PlayerPrefs.GetInt(SettingsPrefix + "SuppressGround", 0) != 0;
                 occlusionController.DepthVisualizationEnabled = PlayerPrefs.GetInt(SettingsPrefix + "DepthVisualization", 0) != 0;
                 occlusionController.RuntimeMeshDebugEnabled = PlayerPrefs.GetInt(SettingsPrefix + "MeshDebug", 0) != 0;
-                occlusionController.RouteDepthBiasMeters = PlayerPrefs.GetFloat(SettingsPrefix + "RouteDepthBias", ArOcclusionController.DefaultRouteDepthBiasMeters);
+
+                // Migrate the legacy 18 cm route depth bias: it lifted the ribbon off the floor and let
+                // it punch through low obstacles. Only a value the user explicitly changed is kept.
+                float storedRouteBias = PlayerPrefs.GetFloat(SettingsPrefix + "RouteDepthBias", ArOcclusionController.DefaultRouteDepthBiasMeters);
+                if (Mathf.Abs(storedRouteBias - LegacyRouteDepthBiasMeters) < 0.0005f)
+                {
+                    storedRouteBias = ArOcclusionController.DefaultRouteDepthBiasMeters;
+                }
+                occlusionController.RouteDepthBiasMeters = storedRouteBias;
+                occlusionController.UseStabilizedOcclusionDistance = PlayerPrefs.GetInt(SettingsPrefix + "StableOcclusionDistance", 1) != 0;
+            }
+
+            if (ttsService != null)
+            {
+                ttsService.Enabled = PlayerPrefs.GetInt(SettingsPrefix + "TtsEnabled", 1) != 0;
+                ttsService.SpeakingRate = Mathf.Clamp(
+                    PlayerPrefs.GetFloat(SettingsPrefix + "TtsRate", GoogleTextToSpeechService.DefaultSpeakingRate),
+                    GoogleTextToSpeechService.MinSpeakingRate,
+                    GoogleTextToSpeechService.MaxSpeakingRate);
+                ttsService.CloudApiKey = PlayerPrefs.GetString(SettingsPrefix + "TtsCloudApiKey", string.Empty);
             }
         }
 
@@ -872,6 +1374,13 @@ namespace Vps.UnityClient.Navigation
                 PlayerPrefs.SetInt(SettingsPrefix + "DepthVisualization", occlusionController.DepthVisualizationEnabled ? 1 : 0);
                 PlayerPrefs.SetInt(SettingsPrefix + "MeshDebug", occlusionController.RuntimeMeshDebugEnabled ? 1 : 0);
                 PlayerPrefs.SetFloat(SettingsPrefix + "RouteDepthBias", occlusionController.RouteDepthBiasMeters);
+                PlayerPrefs.SetInt(SettingsPrefix + "StableOcclusionDistance", occlusionController.UseStabilizedOcclusionDistance ? 1 : 0);
+            }
+            if (ttsService != null)
+            {
+                PlayerPrefs.SetInt(SettingsPrefix + "TtsEnabled", ttsService.Enabled ? 1 : 0);
+                PlayerPrefs.SetFloat(SettingsPrefix + "TtsRate", ttsService.SpeakingRate);
+                PlayerPrefs.SetString(SettingsPrefix + "TtsCloudApiKey", ttsService.CloudApiKey ?? string.Empty);
             }
             if (flushToDisk) PlayerPrefs.Save();
         }
@@ -957,7 +1466,7 @@ namespace Vps.UnityClient.Navigation
             y += 68f;
 
             float depthBias = occlusionController != null ? occlusionController.RouteDepthBiasMeters : ArOcclusionController.DefaultRouteDepthBiasMeters;
-            newValue = DrawSettingsSlider(contentWidth, y, "Bù độ sâu tuyến", depthBias, 0f, 0.35f, "0.00 m");
+            newValue = DrawSettingsSlider(contentWidth, y, "Bù độ sâu tuyến", depthBias, 0f, 0.15f, "0.00 m");
             if (!Mathf.Approximately(newValue, depthBias) && occlusionController != null)
             {
                 occlusionController.RouteDepthBiasMeters = newValue;
@@ -995,7 +1504,7 @@ namespace Vps.UnityClient.Navigation
             y += 68f;
 
             float groundDrop = companionGuide != null ? companionGuide.GroundDropMeters : DoraemonCompanionGuide.DefaultGroundDrop;
-            newValue = DrawSettingsSlider(contentWidth, y, "Độ hạ model", groundDrop, 0f, 0.4f, "0.00 m");
+            newValue = DrawSettingsSlider(contentWidth, y, "Độ hạ model", groundDrop, 0f, 0.15f, "0.00 m");
             if (!Mathf.Approximately(newValue, groundDrop) && companionGuide != null)
             {
                 companionGuide.GroundDropMeters = newValue;
@@ -1012,6 +1521,7 @@ namespace Vps.UnityClient.Navigation
                 DrawOcclusionModeChoice(contentWidth, ref y, ArOcclusionQualityMode.HighQuality, "Chất lượng cao", "Thêm ổn định bằng lưới, tốn tài nguyên hơn");
 
                 DrawSettingsToggle(contentWidth, ref y, "Làm mượt viền depth", "Giảm răng cưa quanh vật thể bị che", OcclusionToggle.SmoothEdges);
+                DrawSettingsToggle(contentWidth, ref y, "Ổn định khoảng cách che", "Tránh che sai khi có vật thể gần camera", OcclusionToggle.StableOcclusionDistance);
                 DrawSettingsToggle(contentWidth, ref y, "Lọc vùng trời", "Loại bỏ vùng sky khỏi depth suppression", OcclusionToggle.SemanticSuppression);
                 DrawSettingsToggle(contentWidth, ref y, "Lọc mặt đất", "Có thể giảm che khuất nhầm trên sàn", OcclusionToggle.SuppressGround);
                 DrawSettingsToggle(contentWidth, ref y, "Hiện hình ảnh depth", "Chỉ hỗ trợ trong chế độ Cân bằng / Cao", OcclusionToggle.DepthVisualization);
@@ -1021,11 +1531,9 @@ namespace Vps.UnityClient.Navigation
                     occlusionController.CurrentFps, occlusionController.CurrentFrameTimeMs, occlusionController.AllocatedMemoryMb);
                 GUI.Label(new Rect(8f, y + 4f, contentWidth - 16f, 20f), performance, theme.LightCardTitleStyle);
                 string depthState = "Depth " + (occlusionController.IsDepthSubsystemAvailable ? "sẵn sàng" : "chưa khả dụng") +
-                    " · Đang dùng: " + GetQualityModeLabel(occlusionController.EffectiveMode) + "\n" + occlusionController.ActiveSubsystemSummary;
-                if (!string.IsNullOrEmpty(occlusionController.LastWarningOrError))
-                    depthState += "\n" + occlusionController.LastWarningOrError;
-                GUI.Label(new Rect(8f, y + 25f, contentWidth - 16f, 48f), depthState, theme.LightCaptionStyle);
-                y += 78f;
+                    " · Đang dùng: " + GetQualityModeLabel(occlusionController.EffectiveMode) + "\n" + occlusionController.DiagnosticsReport;
+                GUI.Label(new Rect(8f, y + 25f, contentWidth - 16f, 88f), depthState, theme.LightCaptionStyle);
+                y += 118f;
             }
             GUI.EndScrollView();
 
@@ -1139,6 +1647,7 @@ namespace Vps.UnityClient.Navigation
             switch (setting)
             {
                 case OcclusionToggle.SmoothEdges: return occlusionController.PreferSmoothEdges;
+                case OcclusionToggle.StableOcclusionDistance: return occlusionController.UseStabilizedOcclusionDistance;
                 case OcclusionToggle.SemanticSuppression: return occlusionController.SemanticSuppressionEnabled;
                 case OcclusionToggle.SuppressGround: return occlusionController.SuppressGroundChannel;
                 case OcclusionToggle.DepthVisualization: return occlusionController.DepthVisualizationEnabled;
@@ -1153,6 +1662,7 @@ namespace Vps.UnityClient.Navigation
             switch (setting)
             {
                 case OcclusionToggle.SmoothEdges: occlusionController.PreferSmoothEdges = value; break;
+                case OcclusionToggle.StableOcclusionDistance: occlusionController.UseStabilizedOcclusionDistance = value; break;
                 case OcclusionToggle.SemanticSuppression: occlusionController.SemanticSuppressionEnabled = value; break;
                 case OcclusionToggle.SuppressGround: occlusionController.SuppressGroundChannel = value; break;
                 case OcclusionToggle.DepthVisualization: occlusionController.DepthVisualizationEnabled = value; break;
@@ -1184,6 +1694,11 @@ namespace Vps.UnityClient.Navigation
                 occlusionController.DepthVisualizationEnabled = false;
                 occlusionController.RuntimeMeshDebugEnabled = false;
                 occlusionController.RouteDepthBiasMeters = ArOcclusionController.DefaultRouteDepthBiasMeters;
+            }
+            if (ttsService != null)
+            {
+                ttsService.Enabled = true;
+                ttsService.SpeakingRate = GoogleTextToSpeechService.DefaultSpeakingRate;
             }
             ApplyLineSettings();
             SaveUserSettings(false);
@@ -1595,6 +2110,20 @@ namespace Vps.UnityClient.Navigation
                 return;
             }
             Vector3 localCamera = trackedAnchor.InverseTransformPoint(arCamera.transform.position);
+            if (companionGuide != null && companionGuide.IsAtDestination &&
+                string.Equals(activeRoutedPoiId, destination.Id, StringComparison.Ordinal) &&
+                destination.AnchorLocal != null)
+            {
+                float distToDest2D = Vector2.Distance(
+                    new Vector2(localCamera.x, localCamera.z),
+                    new Vector2(destination.AnchorLocal.X, destination.AnchorLocal.Z));
+                if (distToDest2D <= DoraemonCompanionGuide.DestinationUnlockDistanceM)
+                {
+                    companionGuide.SetVisible(true);
+                    if (routeLine != null && currentRoutePoints.Length >= 2) routeLine.enabled = true;
+                    return;
+                }
+            }
             SiteGraphV2Route route;
             string error;
             if (!SiteGraphV2Pathfinder.TryFindRoute(manifest, localCamera, destination.NodeId, MaximumSnapDistanceM, out route, out error))
@@ -1615,7 +2144,11 @@ namespace Vps.UnityClient.Navigation
             {
                 companionGuide.Initialize(trackedAnchor, arCamera);
                 companionGuide.SetRoute(currentRoutePoints);
-                RenderRoutePositions(companionGuide.GroundPoints);
+                // The ribbon is drawn on the raw route plane (the real floor level), not on the
+                // companion's ground-dropped path: dropping the ribbon by the companion sink made it
+                // sink into the floor, and the old 18 cm vertex pull pushed it back up so the line
+                // floated ~10 cm above the floor and punched through low obstacles.
+                RenderRoutePositions(currentRoutePoints);
                 companionGuide.SetVisible(true);
                 if (occlusionController != null)
                 {
@@ -1721,6 +2254,9 @@ namespace Vps.UnityClient.Navigation
         {
             if (routeLine == null) return;
             routeLine.widthMultiplier = routeLineWidth;
+            routeLine.textureMode = LineTextureMode.Tile;
+            float tileUnitMeters = Mathf.Clamp(routeLineWidth, 0.14f, 0.45f);
+            routeLine.textureScale = new Vector2(1.0f / tileUnitMeters, 1.0f);
             routeLine.startColor = Color.white;
             routeLine.endColor = Color.white;
             if (lineFlatOnGround)
@@ -1740,24 +2276,96 @@ namespace Vps.UnityClient.Navigation
                 occlusionController.ApplyRouteMaterialDepthSettings(material);
         }
 
+        public static Vector3[] BuildSmoothRenderRoutePoints(Vector3[] rawPoints)
+        {
+            if (rawPoints == null || rawPoints.Length < 3)
+            {
+                return rawPoints ?? Array.Empty<Vector3>();
+            }
+
+            var smoothed = new List<Vector3>(rawPoints.Length * 4);
+            AppendUniqueRoutePoint(smoothed, rawPoints[0]);
+
+            const int cornerSteps = 4;
+            for (int i = 1; i < rawPoints.Length - 1; i++)
+            {
+                Vector3 prev = rawPoints[i - 1];
+                Vector3 curr = rawPoints[i];
+                Vector3 next = rawPoints[i + 1];
+
+                Vector3 segIn = curr - prev;
+                Vector3 segOut = next - curr;
+                float lenIn = segIn.magnitude;
+                float lenOut = segOut.magnitude;
+                if (lenIn < 0.15f || lenOut < 0.15f)
+                {
+                    AppendUniqueRoutePoint(smoothed, curr);
+                    continue;
+                }
+
+                Vector3 dIn = segIn / lenIn;
+                Vector3 dOut = segOut / lenOut;
+                float dot = Vector3.Dot(dIn, dOut);
+                // Fillet noticeable turns (dot < ~13 deg) without folding sharp hairpins
+                if (dot >= 0.975f || dot <= -0.95f)
+                {
+                    AppendUniqueRoutePoint(smoothed, curr);
+                    continue;
+                }
+
+                float cut = Mathf.Min(0.45f, lenIn * 0.35f, lenOut * 0.35f);
+                Vector3 arcStart = curr - dIn * cut;
+                Vector3 arcEnd = curr + dOut * cut;
+                for (int step = 0; step <= cornerSteps; step++)
+                {
+                    float t = step / (float)cornerSteps;
+                    float inv = 1f - t;
+                    Vector3 arcPt = (inv * inv) * arcStart + (2f * inv * t) * curr + (t * t) * arcEnd;
+                    AppendUniqueRoutePoint(smoothed, arcPt);
+                }
+            }
+
+            AppendUniqueRoutePoint(smoothed, rawPoints[rawPoints.Length - 1]);
+            return smoothed.ToArray();
+        }
+
+        private static void AppendUniqueRoutePoint(List<Vector3> points, Vector3 candidate)
+        {
+            if (points.Count == 0 || (points[points.Count - 1] - candidate).sqrMagnitude > 0.000025f)
+            {
+                points.Add(candidate);
+            }
+        }
+
         private void RenderRoutePositions(Vector3[] anchorLocalPoints)
         {
             if (routeLine == null || anchorLocalPoints == null || anchorLocalPoints.Length == 0) return;
             ApplyLineSettings();
+            Vector3[] renderPoints = BuildSmoothRenderRoutePoints(anchorLocalPoints);
+            float routeLengthMeters = 0f;
+            for (int i = 1; i < renderPoints.Length; i++)
+            {
+                routeLengthMeters += Vector3.Distance(renderPoints[i - 1], renderPoints[i]);
+            }
+            Material mat = routeLine.sharedMaterial;
+            if (mat != null && mat.HasProperty("_TotalUvLength"))
+            {
+                mat.SetFloat("_TotalUvLength", routeLengthMeters * routeLine.textureScale.x);
+            }
             if (routeLine.useWorldSpace && trackedAnchor != null)
             {
-                Vector3[] worldPoints = new Vector3[anchorLocalPoints.Length];
-                for (int i = 0; i < anchorLocalPoints.Length; i++)
+                Vector3[] worldPoints = new Vector3[renderPoints.Length];
+                for (int i = 0; i < renderPoints.Length; i++)
                 {
-                    worldPoints[i] = trackedAnchor.TransformPoint(anchorLocalPoints[i]);
+                    worldPoints[i] = trackedAnchor.TransformPoint(renderPoints[i]);
                 }
                 routeLine.positionCount = worldPoints.Length;
                 routeLine.SetPositions(worldPoints);
             }
             else
             {
-                routeLine.positionCount = anchorLocalPoints.Length;
-                routeLine.SetPositions(anchorLocalPoints);
+                routeLine.positionCount = renderPoints.Length;
+                routeLine.SetPositions(renderPoints);
             }
         }
 
@@ -1770,28 +2378,36 @@ namespace Vps.UnityClient.Navigation
                 routeLine = routeObject.AddComponent<LineRenderer>();
                 routeLine.useWorldSpace = true;
                 routeLine.loop = false;
-                routeLine.numCornerVertices = 6;
-                routeLine.numCapVertices = 6;
+                routeLine.textureMode = LineTextureMode.Tile;
+                routeLine.textureScale = Vector2.one;
+                routeLine.numCornerVertices = 4;
+                routeLine.numCapVertices = 4;
                 routeLine.startColor = Color.white;
                 routeLine.endColor = Color.white;
                 ApplyLineSettings();
             }
             if (routeLine.sharedMaterial == null || routeLine.sharedMaterial.shader == null || routeLine.sharedMaterial.shader.name != "Vps/ARRouteLine")
             {
-                Shader shader = Shader.Find("Vps/ARRouteLine");
-                if (shader == null) shader = Shader.Find("Sprites/Default");
-                if (shader == null) shader = Shader.Find("Unlit/Color");
-                if (shader == null) return false;
-                ownedMaterial = new Material(shader);
-                ownedMaterial.color = routeLineColor;
-                if (occlusionController != null)
-                {
-                    occlusionController.ApplyRouteMaterialDepthSettings(ownedMaterial);
-                }
+                ownedMaterial = CreateRouteMaterial(routeLineColor);
+                if (ownedMaterial == null) return false;
                 routeLine.sharedMaterial = ownedMaterial;
             }
             ApplyLineSettings();
             return true;
+        }
+
+        private Material CreateRouteMaterial(Color color)
+        {
+            Shader shader = Shader.Find("Vps/ARRouteLine");
+            if (shader == null) shader = Shader.Find("Sprites/Default");
+            if (shader == null) shader = Shader.Find("Unlit/Color");
+            if (shader == null) return null;
+            var material = new Material(shader) { color = color };
+            if (occlusionController != null)
+            {
+                occlusionController.ApplyRouteMaterialDepthSettings(material);
+            }
+            return material;
         }
 
         private void StopNavigation()
@@ -1802,12 +2418,26 @@ namespace Vps.UnityClient.Navigation
             stableTracking = false;
             bindingVerified = false;
             trackedSince = 0d;
+            authoringMode = false;
+            isRecordingRoute = false;
+            recordedFloorPoints.Clear();
+            hasWalkStartCamY = false;
+            hasPendingPoiLocation = false;
+            pendingWalkSnapshot = Array.Empty<Vector3>();
+            currentAuthoringSnapDistance = float.MaxValue;
             if (wasTracking && localizationAdapter != null) localizationAdapter.StopTracking();
             activeRoutedPoiId = null;
+            lastAutoSpokenArrivalKey = null;
+            ttsService?.Stop();
             currentRoutePoints = Array.Empty<Vector3>();
             trackedAnchor = null;
             SetRouteVisible(false);
-            if (companionGuide != null) companionGuide.SetVisible(false);
+            SetAuthoringPreviewVisible(false);
+            if (companionGuide != null)
+            {
+                companionGuide.ResetNavigationState();
+                companionGuide.SetVisible(false);
+            }
             if (occlusionController != null)
             {
                 occlusionController.SetPrincipalOccludee(null);
@@ -1817,6 +2447,249 @@ namespace Vps.UnityClient.Navigation
             IsAnyNavigating = false;
             if (nianticAccessTokenProvider != null) nianticAccessTokenProvider.Logout();
             if (bootstrap != null && bootstrap.Manifest != null) status = "Đã dừng dẫn đường.";
+        }
+
+        private void UpdateAuthoringSession()
+        {
+            if (bootstrap == null) bootstrap = GetComponent<NavigationBootstrapController>();
+            if (bootstrap == null || bootstrap.Manifest == null || trackedAnchor == null || arCamera == null) return;
+
+            if (TryGetCurrentAuthoringFloorPoint(out Vector3 floorPoint))
+            {
+                currentAuthoringFloorPoint = floorPoint;
+                GraphSnapTarget snap = LocalSiteGraphStore.FindNearestGraphConnection(bootstrap.Manifest, floorPoint);
+                currentAuthoringSnapDistance = snap.IsValid ? snap.Distance : float.MaxValue;
+
+                if (isRecordingRoute)
+                {
+                    if (recordedFloorPoints.Count == 0 ||
+                        Vector3.Distance(recordedFloorPoints[recordedFloorPoints.Count - 1], floorPoint) >= AuthoringWalkSpacingMeters)
+                    {
+                        recordedFloorPoints.Add(floorPoint);
+                    }
+                    status = "Đang ghi lộ trình: đi bộ tới điểm đến mới rồi bấm Đặt điểm tại đây.";
+                }
+                else if (snap.IsValid && snap.Distance > 2.5f)
+                {
+                    status = string.Format(CultureInfo.InvariantCulture,
+                        "Đang cách tuyến có sẵn {0:0.0} m — nên lại gần tuyến trước khi bấm Bắt đầu ghi đường.",
+                        snap.Distance);
+                }
+                else
+                {
+                    status = "Sẵn sàng: bấm Bắt đầu ghi đường rồi đi tới điểm mới, hoặc Đặt điểm tại đây.";
+                }
+            }
+
+            UpdateAuthoringPreviewRenderers();
+        }
+
+        private bool TryGetCurrentAuthoringFloorPoint(out Vector3 floorPoint)
+        {
+            floorPoint = Vector3.zero;
+            if (trackedAnchor == null || arCamera == null || bootstrap == null || bootstrap.Manifest == null)
+                return false;
+
+            Vector3 localCam = trackedAnchor.InverseTransformPoint(arCamera.transform.position);
+            float baseFloorY = LocalSiteGraphStore.EstimateFloorHeight(bootstrap.Manifest, localCam);
+            float floorY = baseFloorY;
+
+            if (isRecordingRoute && hasWalkStartCamY)
+            {
+                float deltaY = localCam.y - walkStartCamY;
+                floorY = Mathf.Abs(deltaY) > 0.55f ? walkStartFloorY + deltaY : walkStartFloorY;
+            }
+
+            floorPoint = new Vector3(localCam.x, floorY, localCam.z);
+            return true;
+        }
+
+        private string BuildAuthoringConnectionSummary()
+        {
+            if (bootstrap == null || bootstrap.Manifest == null)
+                return "Chưa có dữ liệu bản đồ.";
+
+            Vector3 probe = pendingWalkSnapshot != null && pendingWalkSnapshot.Length > 0
+                ? pendingWalkSnapshot[0]
+                : (hasPendingPoiLocation ? pendingPoiFloorPoint : currentAuthoringFloorPoint);
+            GraphSnapTarget snap = LocalSiteGraphStore.FindNearestGraphConnection(bootstrap.Manifest, probe);
+            string targetDesc = DescribeSnapTarget(bootstrap.Manifest, snap);
+
+            if (isRecordingRoute && pendingWalkSnapshot != null && pendingWalkSnapshot.Length > 0)
+            {
+                float len = ComputeRecordedWalkLength();
+                return string.Format(CultureInfo.InvariantCulture,
+                    "Tuyến đi bộ {0:0.0} m ({1} điểm), nối từ {2}.",
+                    len, pendingWalkSnapshot.Length, targetDesc);
+            }
+
+            return string.Format(CultureInfo.InvariantCulture,
+                "Nối thẳng từ vị trí hiện tại tới {0} (cách {1:0.0} m).",
+                targetDesc, snap.IsValid ? snap.Distance : 0f);
+        }
+
+        private static string DescribeSnapTarget(PublishedSiteGraphManifest manifest, GraphSnapTarget snap)
+        {
+            if (!snap.IsValid) return "đồ thị hiện tại";
+            if (!string.IsNullOrEmpty(snap.NodeId) && manifest.Graph != null && manifest.Graph.Pois != null)
+            {
+                for (int i = 0; i < manifest.Graph.Pois.Length; i++)
+                {
+                    PublishedGraphPoiV2 poi = manifest.Graph.Pois[i];
+                    if (poi != null && poi.IsActive && string.Equals(poi.NodeId, snap.NodeId, StringComparison.Ordinal))
+                    {
+                        return $"'{CapitalizeFirst(poi.Label)}'";
+                    }
+                }
+                return "nút giao trên tuyến";
+            }
+            return "điểm nối trên đoạn đường gần nhất";
+        }
+
+        private float ComputeRecordedWalkLength()
+        {
+            if (recordedFloorPoints.Count < 2) return 0f;
+            float total = 0f;
+            for (int i = 1; i < recordedFloorPoints.Count; i++)
+            {
+                total += Vector3.Distance(recordedFloorPoints[i - 1], recordedFloorPoints[i]);
+            }
+            return total;
+        }
+
+        private void UpdateAuthoringPreviewRenderers()
+        {
+            if (!authoringMode || !stableTracking || trackedAnchor == null || bootstrap == null || bootstrap.Manifest == null)
+            {
+                SetAuthoringPreviewVisible(false);
+                return;
+            }
+
+            EnsureAuthoringMaterials();
+
+            PublishedGraphEdgeV2[] edges = bootstrap.Manifest.Graph != null && bootstrap.Manifest.Graph.Edges != null
+                ? bootstrap.Manifest.Graph.Edges
+                : Array.Empty<PublishedGraphEdgeV2>();
+
+            int activeLineIndex = 0;
+            for (int i = 0; i < edges.Length; i++)
+            {
+                PublishedGraphEdgeV2 edge = edges[i];
+                if (edge == null || !edge.Enabled || edge.Geometry == null || edge.Geometry.Length < 2) continue;
+
+                LineRenderer lr = GetOrCreateAuthoringEdgeLine(activeLineIndex++);
+                lr.positionCount = edge.Geometry.Length;
+                for (int p = 0; p < edge.Geometry.Length; p++)
+                {
+                    lr.SetPosition(p, trackedAnchor.TransformPoint(edge.Geometry[p].ToVector3()));
+                }
+                lr.enabled = true;
+            }
+
+            for (int i = activeLineIndex; i < authoringExistingEdgeLines.Count; i++)
+            {
+                if (authoringExistingEdgeLines[i] != null) authoringExistingEdgeLines[i].enabled = false;
+            }
+
+            if (isRecordingRoute && recordedFloorPoints.Count > 0)
+            {
+                if (authoringWalkTrailLine == null)
+                {
+                    authoringWalkTrailLine = CreateAuthoringLineRenderer("Authoring Walk Trail", 0.14f, authoringWalkMaterial);
+                }
+
+                GraphSnapTarget snap = LocalSiteGraphStore.FindNearestGraphConnection(bootstrap.Manifest, recordedFloorPoints[0]);
+                var previewPts = new List<Vector3>(recordedFloorPoints.Count + 2);
+                if (snap.IsValid) previewPts.Add(snap.SnapPoint);
+                for (int i = 0; i < recordedFloorPoints.Count; i++) previewPts.Add(recordedFloorPoints[i]);
+                if (Vector3.Distance(previewPts[previewPts.Count - 1], currentAuthoringFloorPoint) > 0.05f)
+                {
+                    previewPts.Add(currentAuthoringFloorPoint);
+                }
+
+                authoringWalkTrailLine.positionCount = previewPts.Count;
+                for (int i = 0; i < previewPts.Count; i++)
+                {
+                    authoringWalkTrailLine.SetPosition(i, trackedAnchor.TransformPoint(previewPts[i]));
+                }
+                authoringWalkTrailLine.enabled = previewPts.Count >= 2;
+            }
+            else if (authoringWalkTrailLine != null)
+            {
+                authoringWalkTrailLine.enabled = false;
+            }
+        }
+
+        private LineRenderer GetOrCreateAuthoringEdgeLine(int index)
+        {
+            while (authoringExistingEdgeLines.Count <= index)
+            {
+                authoringExistingEdgeLines.Add(
+                    CreateAuthoringLineRenderer("Authoring Existing Edge " + authoringExistingEdgeLines.Count, 0.08f, authoringExistingMaterial));
+            }
+            return authoringExistingEdgeLines[index];
+        }
+
+        private LineRenderer CreateAuthoringLineRenderer(string objectName, float width, Material mat)
+        {
+            var go = new GameObject(objectName);
+            var lr = go.AddComponent<LineRenderer>();
+            lr.useWorldSpace = true;
+            lr.loop = false;
+            lr.numCornerVertices = 4;
+            lr.numCapVertices = 4;
+            lr.widthMultiplier = width;
+            lr.startColor = Color.white;
+            lr.endColor = Color.white;
+            lr.alignment = LineAlignment.TransformZ;
+            go.transform.rotation = Quaternion.LookRotation(Vector3.up, Vector3.back);
+            if (mat != null) lr.sharedMaterial = mat;
+            return lr;
+        }
+
+        private void EnsureAuthoringMaterials()
+        {
+            if (authoringExistingMaterial == null)
+            {
+                authoringExistingMaterial = CreateRouteMaterial(new Color(0.22f, 0.74f, 0.97f, 0.65f));
+            }
+            if (authoringWalkMaterial == null)
+            {
+                authoringWalkMaterial = CreateRouteMaterial(new Color(0.06f, 0.85f, 0.50f, 0.95f));
+            }
+        }
+
+        private void SetAuthoringPreviewVisible(bool visible)
+        {
+            for (int i = 0; i < authoringExistingEdgeLines.Count; i++)
+            {
+                if (authoringExistingEdgeLines[i] != null) authoringExistingEdgeLines[i].enabled = visible;
+            }
+            if (authoringWalkTrailLine != null) authoringWalkTrailLine.enabled = visible && isRecordingRoute;
+        }
+
+        private void DestroyAuthoringPreviewRenderers()
+        {
+            for (int i = 0; i < authoringExistingEdgeLines.Count; i++)
+            {
+                if (authoringExistingEdgeLines[i] != null) Destroy(authoringExistingEdgeLines[i].gameObject);
+            }
+            authoringExistingEdgeLines.Clear();
+            if (authoringWalkTrailLine != null)
+            {
+                Destroy(authoringWalkTrailLine.gameObject);
+                authoringWalkTrailLine = null;
+            }
+            if (authoringExistingMaterial != null)
+            {
+                Destroy(authoringExistingMaterial);
+                authoringExistingMaterial = null;
+            }
+            if (authoringWalkMaterial != null)
+            {
+                Destroy(authoringWalkMaterial);
+                authoringWalkMaterial = null;
+            }
         }
 
         private void RefreshPois()
@@ -1865,7 +2738,9 @@ namespace Vps.UnityClient.Navigation
             if (paused)
             {
                 SaveUserSettings(true);
+                ttsService?.Stop();
                 SetRouteVisible(false);
+                SetAuthoringPreviewVisible(false);
                 trackedSince = 0d;
                 stableTracking = false;
             }
@@ -1874,6 +2749,7 @@ namespace Vps.UnityClient.Navigation
         private void OnDestroy()
         {
             StopNavigation();
+            DestroyAuthoringPreviewRenderers();
             if (ownedMaterial != null) Destroy(ownedMaterial);
         }
 

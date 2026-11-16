@@ -39,17 +39,9 @@ GraphicsSettings:
   - {fileID: 4800000, guid: b02d09082cbc14569ae46c12d9836abc, type: 3}
   - {fileID: 4800000, guid: 0f45334fa661448c886e4f99ba812a7e, type: 3}
   - {fileID: 4800000, guid: f40a6c94c8e1b494d93d434ae522a14f, type: 3}
+  - {fileID: 4800000, guid: b1d452c97dd540826935adb2c0de3ee9, type: 3}
   m_PreloadedShaders: []
   m_PreloadShadersBatchTimeLimit: -1
-  m_GraphicsStateCollection: {fileID: 0}
-  m_CollectionStartupAction: 0
-  m_TraceSavePath: TracedCollection
-  m_TraceSendToEditor: 1
-  m_AdditionalWarmupCollections: []
-  m_WarmupAsync: 1
-  m_EnableCacheMissTracing: 0
-  m_WarmupProgressivelyLimit: -1
-  m_CacheMissCollectionPath: CacheMissCollection
   m_SpritesDefaultMaterial: {fileID: 10754, guid: 0000000000000000f000000000000000, type: 0}
   m_CustomRenderPipeline: {fileID: 0}
   m_TransparencySortMode: 0
@@ -61,7 +53,6 @@ GraphicsSettings:
   m_FogStripping: 0
   m_InstancingStripping: 0
   m_BrgStripping: 0
-  m_DefaultLightBaker: 0
   m_LightmapKeepPlain: 1
   m_LightmapKeepDirCombined: 1
   m_LightmapKeepDynamicPlain: 1
@@ -73,11 +64,6 @@ GraphicsSettings:
   m_FogKeepExp2: 1
   m_AlbedoSwatchInfos: []
   m_RenderPipelineGlobalSettingsMap: {}
-  m_ShaderBuildSettings:
-    keywordDeclarationOverrides: []
-    numInternalDefines: 0
-    defines: []
-    compilerSettings: []
   m_LightsUseLinearIntensity: 0
   m_LightsUseColorTemperature: 0
   m_LogWhenShaderIsCompiled: 0

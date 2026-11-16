@@ -13,6 +13,7 @@ namespace Vps.UnityClient.Navigation
         public bool IsStableTracking;
         public bool IsNavigating;
         public string DestinationLabel;
+        public string DestinationDescription;
         public float RouteRemainingMeters;
         public float TotalRouteMeters;
         public string CompanionMessage;
@@ -31,6 +32,18 @@ namespace Vps.UnityClient.Navigation
         public float MemoryMb;
         public bool DepthAvailable;
         public ArOcclusionQualityMode EffectiveOcclusionMode;
+        public bool IsAuthoringMode;
+        public bool IsRecordingWalk;
+        public float RecordedWalkMeters;
+        public int RecordedPointCount;
+        public float NearestGraphDistanceMeters;
+        public Vector3 CurrentAnchorLocalPos;
+        public bool IsUsingLocalManifest;
+        public bool HasRobotBubbleAnchor;
+        public bool IsRobotInFrontOfCamera;
+        public Vector2 RobotBubbleViewportPos;
+        public bool IsTtsSpeaking;
+        public string TtsStatusSummary;
     }
 
     /// <summary>
@@ -51,6 +64,8 @@ namespace Vps.UnityClient.Navigation
         private VisualElement idleHeader;
         private VisualElement localizingHeader;
         private VisualElement navigatingHeader;
+        private VisualElement authoringHeader;
+        private Button btnOpenMapEditor;
         private Button btnIdleSettings;
         private Button btnLocalizingBack;
         private Button btnLocalizingSettings;
@@ -63,6 +78,9 @@ namespace Vps.UnityClient.Navigation
         private VisualElement distancePill;
         private Button btnNavSettings;
         private Button btnNavStop;
+        private Label authoringCoordsLabel;
+        private Label authoringSnapPill;
+        private Button btnAuthoringDone;
 
         // Center Readiness / Launcher Hero
         private VisualElement readinessCard;
@@ -88,12 +106,28 @@ namespace Vps.UnityClient.Navigation
         private VisualElement companionAvatarBox;
         private Label companionStateBadge;
         private Label companionStatusMessage;
+        private VisualElement robotSpeechLayer;
+        private VisualElement robotSpeechBubble;
+        private Label lblRobotBubbleTitle;
+        private Label lblRobotBubbleBody;
+        private Button btnRobotBubbleSpeak;
+        private VisualElement robotSpeechTail;
+        private bool wasRobotBubbleVisible;
+        private Vector2 smoothedRobotBubblePos;
         private Button btnChangeDestination;
         private Button btnFinishNavigation;
+
+        private VisualElement authoringDock;
+        private VisualElement authoringAvatarBox;
+        private Label authoringStateBadge;
+        private Label authoringStatusMessage;
+        private Button btnAuthoringToggleWalk;
+        private Button btnAuthoringMarkPoi;
 
         // Destination Picker Bottom Sheet
         private VisualElement modalDestinationPicker;
         private VisualElement destinationFooter;
+        private Button btnPickerManagePois;
         private Button btnCloseDestinationPicker;
         private VisualElement destinationSearchBox;
         private TextField destinationSearchInput;
@@ -135,22 +169,64 @@ namespace Vps.UnityClient.Navigation
         private Label valGroundDrop;
 
         private Toggle toggleSmoothEdges;
+        private Toggle toggleStableOcclusionDistance;
         private Toggle toggleSemantic;
         private Toggle toggleSuppressGround;
         private Toggle toggleDepthVis;
         private Toggle toggleMeshDebug;
+        private Toggle toggleTtsEnabled;
+        private Slider sliderTtsRate;
+        private Label valTtsRate;
+        private VisualElement ttsApiKeyBox;
+        private TextField ttsApiKeyInput;
+        private Label lblTtsStatus;
+        private Button btnTtsTest;
 
         private Label lblMetricFps;
         private Label lblMetricFrame;
         private Label lblMetricRam;
         private Label lblMetricDepth;
         private Label lblDiagnostics;
+        private Label lblOcclusionStatus;
         private Button btnSettingsReset;
         private Button btnSettingsDone;
+
+        // Offline Map Editor Bottom Sheet
+        private VisualElement modalMapEditor;
+        private VisualElement mapEditorFooter;
+        private Button btnCloseMapEditor;
+        private Label mapEditorCountBadge;
+        private Label mapEditorCustomBadge;
+        private VisualElement mapEditorFeedback;
+        private Label lblMapEditorFeedback;
+        private ScrollView mapEditorScrollView;
+        private VisualElement mapEditorItemsContainer;
+        private Button btnStartArAuthoring;
+        private Button btnExportManifestJson;
+        private Button btnResetLocalManifest;
+
+        // Add / Edit POI Form Modal
+        private VisualElement modalPoiForm;
+        private ScrollView poiFormScrollView;
+        private VisualElement poiFormFooter;
+        private Button btnClosePoiForm;
+        private Label lblPoiFormTitle;
+        private Label lblPoiFormSubtitle;
+        private VisualElement poiFormConnectionBox;
+        private Label lblPoiFormConnection;
+        private Label lblPoiFormError;
+        private VisualElement poiFormInputBox;
+        private TextField poiFormLabelInput;
+        private VisualElement poiFormCategoryContainer;
+        private VisualElement poiFormDescriptionBox;
+        private TextField poiFormDescriptionInput;
+        private Button btnPoiFormCancel;
+        private Button btnPoiFormSave;
 
         // Cached State
         private readonly List<VisualElement> colorChipElements = new List<VisualElement>();
         private readonly List<VisualElement> occlusionCardElements = new List<VisualElement>();
+        private readonly List<Button> poiFormCategoryButtons = new List<Button>();
         private readonly Dictionary<string, VisualElement> poiRowById = new Dictionary<string, VisualElement>(StringComparer.Ordinal);
         private readonly List<PublishedGraphPoiV2> latestPois = new List<PublishedGraphPoiV2>();
         private readonly List<string> knownCategories = new List<string>();
@@ -160,7 +236,12 @@ namespace Vps.UnityClient.Navigation
         private bool isSyncingSettings;
         private bool isPickerOpen;
         private bool isSettingsOpen;
+        private bool isMapEditorOpen;
+        private bool isPoiFormOpen;
         private bool isBusyConnecting;
+        private bool resetLocalConfirmPending;
+        private string editingPoiId;
+        private string poiFormSelectedCategory = "room";
 
         // Safe-area geometry cache (avoids touching styles every frame)
         private Rect lastSafeArea = new Rect(-1f, -1f, -1f, -1f);
@@ -172,6 +253,8 @@ namespace Vps.UnityClient.Navigation
         public bool IsActive => rootElement != null;
         public bool IsPickerOpen => isPickerOpen;
         public bool IsSettingsOpen => isSettingsOpen;
+        public bool IsMapEditorOpen => isMapEditorOpen;
+        public bool IsPoiFormOpen => isPoiFormOpen;
 
         public NavigationUiToolkitController(SiteGraphV2NavigationExperience navExperience)
         {
@@ -196,8 +279,11 @@ namespace Vps.UnityClient.Navigation
             BindVectorIcons();
             ConfigureModernScrollView(destinationScrollView);
             ConfigureModernScrollView(settingsScrollView);
+            ConfigureModernScrollView(mapEditorScrollView);
+            ConfigureModernScrollView(poiFormScrollView);
             BuildColorSwatches();
             BuildOcclusionModeCards();
+            BuildPoiFormCategoryChips();
             RegisterEvents();
 
             rootElement.RegisterCallback<GeometryChangedEvent>(_ => ApplySafeArea());
@@ -215,7 +301,9 @@ namespace Vps.UnityClient.Navigation
             idleHeader = rootElement.Q<VisualElement>("idle-header");
             localizingHeader = rootElement.Q<VisualElement>("localizing-header");
             navigatingHeader = rootElement.Q<VisualElement>("navigating-header");
+            authoringHeader = rootElement.Q<VisualElement>("authoring-header");
 
+            btnOpenMapEditor = rootElement.Q<Button>("btn-open-map-editor");
             btnIdleSettings = rootElement.Q<Button>("btn-idle-settings");
             btnLocalizingBack = rootElement.Q<Button>("btn-localizing-back");
             btnLocalizingSettings = rootElement.Q<Button>("btn-localizing-settings");
@@ -229,6 +317,10 @@ namespace Vps.UnityClient.Navigation
             distancePill = navDistanceRemaining != null ? navDistanceRemaining.parent : null;
             btnNavSettings = rootElement.Q<Button>("btn-nav-settings");
             btnNavStop = rootElement.Q<Button>("btn-nav-stop");
+
+            authoringCoordsLabel = rootElement.Q<Label>("authoring-coords-label");
+            authoringSnapPill = rootElement.Q<Label>("authoring-snap-pill");
+            btnAuthoringDone = rootElement.Q<Button>("btn-authoring-done");
 
             readinessCard = rootElement.Q<VisualElement>("readiness-card");
             readinessSubtitle = rootElement.Q<Label>("readiness-subtitle");
@@ -252,11 +344,25 @@ namespace Vps.UnityClient.Navigation
             companionAvatarBox = rootElement.Q<VisualElement>("companion-avatar-box");
             companionStateBadge = rootElement.Q<Label>("companion-state-badge");
             companionStatusMessage = rootElement.Q<Label>("companion-status-message");
+            robotSpeechLayer = rootElement.Q<VisualElement>("robot-speech-layer");
+            robotSpeechBubble = rootElement.Q<VisualElement>("robot-speech-bubble");
+            lblRobotBubbleTitle = rootElement.Q<Label>("lbl-robot-bubble-title");
+            lblRobotBubbleBody = rootElement.Q<Label>("lbl-robot-bubble-body");
+            btnRobotBubbleSpeak = rootElement.Q<Button>("btn-robot-bubble-speak");
+            robotSpeechTail = rootElement.Q<VisualElement>("robot-speech-tail");
             btnChangeDestination = rootElement.Q<Button>("btn-change-destination");
             btnFinishNavigation = rootElement.Q<Button>("btn-finish-navigation");
 
+            authoringDock = rootElement.Q<VisualElement>("authoring-dock");
+            authoringAvatarBox = rootElement.Q<VisualElement>("authoring-avatar-box");
+            authoringStateBadge = rootElement.Q<Label>("authoring-state-badge");
+            authoringStatusMessage = rootElement.Q<Label>("authoring-status-message");
+            btnAuthoringToggleWalk = rootElement.Q<Button>("btn-authoring-toggle-walk");
+            btnAuthoringMarkPoi = rootElement.Q<Button>("btn-authoring-mark-poi");
+
             modalDestinationPicker = rootElement.Q<VisualElement>("modal-destination-picker");
             destinationFooter = modalDestinationPicker != null ? modalDestinationPicker.Q<VisualElement>(className: "modal-footer--picker") : null;
+            btnPickerManagePois = rootElement.Q<Button>("btn-picker-manage-pois");
             btnCloseDestinationPicker = rootElement.Q<Button>("btn-close-destination-picker");
             destinationSearchBox = rootElement.Q<VisualElement>("destination-search-box");
             destinationSearchInput = rootElement.Q<TextField>("destination-search-input");
@@ -299,29 +405,74 @@ namespace Vps.UnityClient.Navigation
             valGroundDrop = rootElement.Q<Label>("val-ground-drop");
 
             toggleSmoothEdges = rootElement.Q<Toggle>("toggle-smooth-edges");
+            toggleStableOcclusionDistance = rootElement.Q<Toggle>("toggle-stable-occlusion-distance");
             toggleSemantic = rootElement.Q<Toggle>("toggle-semantic");
             toggleSuppressGround = rootElement.Q<Toggle>("toggle-suppress-ground");
             toggleDepthVis = rootElement.Q<Toggle>("toggle-depth-vis");
             toggleMeshDebug = rootElement.Q<Toggle>("toggle-mesh-debug");
+            toggleTtsEnabled = rootElement.Q<Toggle>("toggle-tts-enabled");
+            sliderTtsRate = rootElement.Q<Slider>("slider-tts-rate");
+            valTtsRate = rootElement.Q<Label>("val-tts-rate");
+            ttsApiKeyBox = rootElement.Q<VisualElement>("tts-api-key-box");
+            ttsApiKeyInput = rootElement.Q<TextField>("tts-api-key-input");
+            if (ttsApiKeyInput != null) ttsApiKeyInput.isPasswordField = true;
+            lblTtsStatus = rootElement.Q<Label>("lbl-tts-status");
+            btnTtsTest = rootElement.Q<Button>("btn-tts-test");
 
             lblMetricFps = rootElement.Q<Label>("lbl-metric-fps");
             lblMetricFrame = rootElement.Q<Label>("lbl-metric-frame");
             lblMetricRam = rootElement.Q<Label>("lbl-metric-ram");
             lblMetricDepth = rootElement.Q<Label>("lbl-metric-depth");
             lblDiagnostics = rootElement.Q<Label>("lbl-diagnostics");
+            lblOcclusionStatus = rootElement.Q<Label>("lbl-occlusion-status");
             btnSettingsReset = rootElement.Q<Button>("btn-settings-reset");
             btnSettingsDone = rootElement.Q<Button>("btn-settings-done");
+
+            modalMapEditor = rootElement.Q<VisualElement>("modal-map-editor");
+            mapEditorFooter = rootElement.Q<VisualElement>("map-editor-footer");
+            btnCloseMapEditor = rootElement.Q<Button>("btn-close-map-editor");
+            mapEditorCountBadge = rootElement.Q<Label>("map-editor-count-badge");
+            mapEditorCustomBadge = rootElement.Q<Label>("map-editor-custom-badge");
+            mapEditorFeedback = rootElement.Q<VisualElement>("map-editor-feedback");
+            lblMapEditorFeedback = rootElement.Q<Label>("lbl-map-editor-feedback");
+            mapEditorScrollView = rootElement.Q<ScrollView>("map-editor-scroll-view");
+            mapEditorItemsContainer = rootElement.Q<VisualElement>("map-editor-items-container");
+            btnStartArAuthoring = rootElement.Q<Button>("btn-start-ar-authoring");
+            btnExportManifestJson = rootElement.Q<Button>("btn-export-manifest-json");
+            btnResetLocalManifest = rootElement.Q<Button>("btn-reset-local-manifest");
+
+            modalPoiForm = rootElement.Q<VisualElement>("modal-poi-form");
+            poiFormScrollView = rootElement.Q<ScrollView>("poi-form-scroll-view");
+            poiFormFooter = rootElement.Q<VisualElement>("poi-form-footer");
+            btnClosePoiForm = rootElement.Q<Button>("btn-close-poi-form");
+            lblPoiFormTitle = rootElement.Q<Label>("lbl-poi-form-title");
+            lblPoiFormSubtitle = rootElement.Q<Label>("lbl-poi-form-subtitle");
+            poiFormConnectionBox = rootElement.Q<VisualElement>("poi-form-connection-box");
+            lblPoiFormConnection = rootElement.Q<Label>("lbl-poi-form-connection");
+            lblPoiFormError = rootElement.Q<Label>("lbl-poi-form-error");
+            poiFormInputBox = rootElement.Q<VisualElement>("poi-form-input-box");
+            poiFormLabelInput = rootElement.Q<TextField>("poi-form-label-input");
+            poiFormCategoryContainer = rootElement.Q<VisualElement>("poi-form-category-container");
+            poiFormDescriptionBox = rootElement.Q<VisualElement>("poi-form-description-box");
+            poiFormDescriptionInput = rootElement.Q<TextField>("poi-form-description-input");
+            if (poiFormDescriptionInput != null) poiFormDescriptionInput.multiline = true;
+            btnPoiFormCancel = rootElement.Q<Button>("btn-poi-form-cancel");
+            btnPoiFormSave = rootElement.Q<Button>("btn-poi-form-save");
         }
 
         private void BindVectorIcons()
         {
             BindBrandLogo();
             SetIcon("icon-nav-compass", NavigationUiVectorIcons.IconKind.Compass);
+            SetIcon("icon-idle-add-poi", NavigationUiVectorIcons.IconKind.Plus);
             SetIcon("icon-idle-settings", NavigationUiVectorIcons.IconKind.Settings);
             SetIcon("icon-localizing-back", NavigationUiVectorIcons.IconKind.Back);
             SetIcon("icon-localizing-settings", NavigationUiVectorIcons.IconKind.Settings);
             SetIcon("icon-nav-pin", NavigationUiVectorIcons.IconKind.Pin);
             SetIcon("icon-nav-settings", NavigationUiVectorIcons.IconKind.Settings);
+            SetIcon("icon-authoring-pin", NavigationUiVectorIcons.IconKind.RoutePath);
+            SetIcon("icon-authoring-route", NavigationUiVectorIcons.IconKind.RoutePath);
+            SetIcon("icon-authoring-mark", NavigationUiVectorIcons.IconKind.Plus);
 
             SetIcon("icon-readiness-error", NavigationUiVectorIcons.IconKind.AlertCircle);
             SetIcon("icon-retry-bootstrap", NavigationUiVectorIcons.IconKind.Refresh);
@@ -333,6 +484,8 @@ namespace Vps.UnityClient.Navigation
             SetIcon("icon-launcher-chevron", NavigationUiVectorIcons.IconKind.ChevronRight);
             SetIcon("icon-localizing-scan", NavigationUiVectorIcons.IconKind.ScanCamera);
             SetIcon("icon-companion-robot", NavigationUiVectorIcons.IconKind.Robot);
+            SetIcon("icon-robot-bubble", NavigationUiVectorIcons.IconKind.Robot);
+            SetIcon("icon-robot-bubble-speak", NavigationUiVectorIcons.IconKind.VolumeOn);
             SetIcon("icon-finish-check", NavigationUiVectorIcons.IconKind.Check);
 
             SetIcon("icon-close-picker", NavigationUiVectorIcons.IconKind.Close);
@@ -346,8 +499,15 @@ namespace Vps.UnityClient.Navigation
             SetIcon("icon-close-settings", NavigationUiVectorIcons.IconKind.Close);
             SetIcon("icon-sec-route", NavigationUiVectorIcons.IconKind.RoutePath);
             SetIcon("icon-sec-companion", NavigationUiVectorIcons.IconKind.Robot);
+            SetIcon("icon-sec-tts", NavigationUiVectorIcons.IconKind.VolumeOn);
+            SetIcon("icon-tts-test", NavigationUiVectorIcons.IconKind.VolumeOn);
             SetIcon("icon-sec-occlusion", NavigationUiVectorIcons.IconKind.Layers);
             SetIcon("icon-sec-diag", NavigationUiVectorIcons.IconKind.Activity);
+
+            SetIcon("icon-close-map-editor", NavigationUiVectorIcons.IconKind.Close);
+            SetIcon("icon-start-ar-authoring", NavigationUiVectorIcons.IconKind.Plus);
+            SetIcon("icon-export-json", NavigationUiVectorIcons.IconKind.Copy);
+            SetIcon("icon-close-poi-form", NavigationUiVectorIcons.IconKind.Close);
         }
 
         private void BindBrandLogo()
@@ -503,11 +663,42 @@ namespace Vps.UnityClient.Navigation
             }
         }
 
+        private void BuildPoiFormCategoryChips()
+        {
+            if (poiFormCategoryContainer == null) return;
+            poiFormCategoryContainer.Clear();
+            poiFormCategoryButtons.Clear();
+
+            string[] cats = LocalSiteGraphStore.SupportedCategories;
+            for (int i = 0; i < cats.Length; i++)
+            {
+                string catKey = cats[i];
+                var chip = new Button { text = FormatCategoryLabel(catKey) };
+                chip.userData = catKey;
+                chip.AddToClassList("filter-chip");
+                chip.AddToClassList("poi-form-category-chip");
+                chip.clicked += () =>
+                {
+                    poiFormSelectedCategory = catKey;
+                    UpdatePoiFormCategoryHighlights();
+                };
+                poiFormCategoryContainer.Add(chip);
+                poiFormCategoryButtons.Add(chip);
+            }
+            UpdatePoiFormCategoryHighlights();
+        }
+
         private void RegisterEvents()
         {
+            if (btnOpenMapEditor != null) btnOpenMapEditor.clicked += () => experience?.OnOpenMapEditorClicked();
+            if (btnPickerManagePois != null) btnPickerManagePois.clicked += () => experience?.OnOpenMapEditorClicked();
             if (btnIdleSettings != null) btnIdleSettings.clicked += OpenSettingsModal;
             if (btnLocalizingSettings != null) btnLocalizingSettings.clicked += OpenSettingsModal;
             if (btnNavSettings != null) btnNavSettings.clicked += OpenSettingsModal;
+
+            if (btnAuthoringDone != null) btnAuthoringDone.clicked += () => experience?.OnStopArAuthoringRequested();
+            if (btnAuthoringToggleWalk != null) btnAuthoringToggleWalk.clicked += () => experience?.OnToggleAuthoringWalkRequested();
+            if (btnAuthoringMarkPoi != null) btnAuthoringMarkPoi.clicked += () => experience?.OnOpenMarkPoiFormRequested();
 
             if (btnLocalizingBack != null)
             {
@@ -721,10 +912,123 @@ namespace Vps.UnityClient.Navigation
 
             // Toggles
             RegisterToggle(toggleSmoothEdges, val => { if (experience != null) experience.SmoothEdgesOcclusion = val; });
+            RegisterToggle(toggleStableOcclusionDistance, val => { if (experience != null) experience.StabilizedOcclusionDistance = val; });
             RegisterToggle(toggleSemantic, val => { if (experience != null) experience.SemanticSuppressionOcclusion = val; });
             RegisterToggle(toggleSuppressGround, val => { if (experience != null) experience.SuppressGroundOcclusion = val; });
             RegisterToggle(toggleDepthVis, val => { if (experience != null) experience.DepthVisualizationOcclusion = val; });
             RegisterToggle(toggleMeshDebug, val => { if (experience != null) experience.MeshDebugOcclusion = val; });
+
+            RegisterToggle(toggleTtsEnabled, val =>
+            {
+                if (experience != null)
+                {
+                    experience.TtsEnabled = val;
+                    UpdateTtsStatusLabel(experience.TtsStatusSummary);
+                }
+            });
+            RegisterSlider(sliderTtsRate, val =>
+            {
+                if (experience != null) experience.TtsSpeakingRate = val;
+                if (valTtsRate != null) valTtsRate.text = $"{val:0.00}×";
+            });
+            if (ttsApiKeyInput != null)
+            {
+                ttsApiKeyInput.RegisterValueChangedCallback(evt =>
+                {
+                    if (isSyncingSettings || experience == null) return;
+                    experience.TtsCloudApiKey = evt.newValue;
+                    UpdateTtsStatusLabel(experience.TtsStatusSummary);
+                });
+                ttsApiKeyInput.RegisterCallback<FocusInEvent>(_ => ttsApiKeyBox?.AddToClassList("search-field-container--focused"));
+                ttsApiKeyInput.RegisterCallback<FocusOutEvent>(_ => ttsApiKeyBox?.RemoveFromClassList("search-field-container--focused"));
+            }
+            if (btnTtsTest != null)
+            {
+                btnTtsTest.clicked += () =>
+                {
+                    experience?.OnTestTtsRequested();
+                    UpdateTtsStatusLabel(experience?.TtsStatusSummary);
+                };
+            }
+            if (btnRobotBubbleSpeak != null)
+            {
+                btnRobotBubbleSpeak.clicked += () => experience?.OnReplayArrivalSpeechRequested();
+            }
+
+            // Map Editor modal
+            if (btnCloseMapEditor != null)
+            {
+                btnCloseMapEditor.clicked += () =>
+                {
+                    CloseMapEditorModal();
+                    experience?.OnMapEditorClosed();
+                };
+            }
+            if (modalMapEditor != null)
+            {
+                modalMapEditor.RegisterCallback<ClickEvent>(evt =>
+                {
+                    if (evt.target == modalMapEditor)
+                    {
+                        CloseMapEditorModal();
+                        experience?.OnMapEditorClosed();
+                    }
+                });
+            }
+            if (btnStartArAuthoring != null)
+            {
+                btnStartArAuthoring.clicked += () =>
+                {
+                    CloseMapEditorModal();
+                    CloseDestinationPickerModal();
+                    experience?.OnStartArAuthoringRequested();
+                };
+            }
+            if (btnExportManifestJson != null)
+            {
+                btnExportManifestJson.clicked += () => experience?.OnExportManifestJsonRequested();
+            }
+            if (btnResetLocalManifest != null)
+            {
+                btnResetLocalManifest.clicked += () =>
+                {
+                    if (!resetLocalConfirmPending)
+                    {
+                        resetLocalConfirmPending = true;
+                        btnResetLocalManifest.text = "Bấm lại để xác nhận";
+                        ShowMapEditorFeedback("Bấm lại nút Khôi phục một lần nữa để xóa các điểm tự thêm và quay về bản đồ gốc.", false);
+                        return;
+                    }
+                    resetLocalConfirmPending = false;
+                    btnResetLocalManifest.text = "Khôi phục gốc";
+                    experience?.OnResetLocalManifestRequested();
+                };
+            }
+
+            // Add / Edit POI Form modal
+            if (btnClosePoiForm != null) btnClosePoiForm.clicked += ClosePoiFormModal;
+            if (btnPoiFormCancel != null) btnPoiFormCancel.clicked += ClosePoiFormModal;
+            if (modalPoiForm != null)
+            {
+                modalPoiForm.RegisterCallback<ClickEvent>(evt =>
+                {
+                    if (evt.target == modalPoiForm) ClosePoiFormModal();
+                });
+            }
+            if (poiFormLabelInput != null)
+            {
+                poiFormLabelInput.RegisterCallback<FocusInEvent>(_ => poiFormInputBox?.AddToClassList("search-field-container--focused"));
+                poiFormLabelInput.RegisterCallback<FocusOutEvent>(_ => poiFormInputBox?.RemoveFromClassList("search-field-container--focused"));
+            }
+            if (poiFormDescriptionInput != null)
+            {
+                poiFormDescriptionInput.RegisterCallback<FocusInEvent>(_ => poiFormDescriptionBox?.AddToClassList("search-field-container--focused"));
+                poiFormDescriptionInput.RegisterCallback<FocusOutEvent>(_ => poiFormDescriptionBox?.RemoveFromClassList("search-field-container--focused"));
+            }
+            if (btnPoiFormSave != null)
+            {
+                btnPoiFormSave.clicked += HandlePoiFormSubmit;
+            }
         }
 
         private void RegisterSlider(Slider slider, Action<float> onChanged)
@@ -798,6 +1102,14 @@ namespace Vps.UnityClient.Navigation
             {
                 settingsFooter.style.paddingBottom = padBottom;
             }
+            if (mapEditorFooter != null)
+            {
+                mapEditorFooter.style.paddingBottom = padBottom;
+            }
+            if (poiFormFooter != null)
+            {
+                poiFormFooter.style.paddingBottom = padBottom;
+            }
         }
 
         /// <summary>Backward-compatible state update signature used by tests and simple callers.</summary>
@@ -837,7 +1149,8 @@ namespace Vps.UnityClient.Navigation
 
             bool showIdle = !state.IsTrackingAccepted;
             bool showLocalizing = state.IsTrackingAccepted && !state.IsStableTracking;
-            bool showNavigating = state.IsTrackingAccepted && state.IsStableTracking && state.IsNavigating;
+            bool showNavigating = state.IsTrackingAccepted && state.IsStableTracking && state.IsNavigating && !state.IsAuthoringMode;
+            bool showAuthoring = state.IsTrackingAccepted && state.IsStableTracking && state.IsAuthoringMode;
 
             SetDisplay(launcherBackground, showIdle);
             SetDisplay(idleHeader, showIdle);
@@ -851,6 +1164,9 @@ namespace Vps.UnityClient.Navigation
             SetDisplay(navigatingHeader, showNavigating);
             SetDisplay(companionDock, showNavigating);
 
+            SetDisplay(authoringHeader, showAuthoring);
+            SetDisplay(authoringDock, showAuthoring);
+
             isBusyConnecting = state.IsBusyConnecting;
 
             if (showIdle)
@@ -862,9 +1178,16 @@ namespace Vps.UnityClient.Navigation
             {
                 if (localizingTargetLabel != null)
                 {
-                    localizingTargetLabel.text = string.IsNullOrEmpty(state.DestinationLabel)
-                        ? "Đang khóa không gian 3D…"
-                        : $"Đích: {state.DestinationLabel}";
+                    if (state.IsAuthoringMode)
+                    {
+                        localizingTargetLabel.text = "Định vị để thêm điểm đến";
+                    }
+                    else
+                    {
+                        localizingTargetLabel.text = string.IsNullOrEmpty(state.DestinationLabel)
+                            ? "Đang khóa không gian 3D…"
+                            : $"Đích: {state.DestinationLabel}";
+                    }
                 }
 
                 if (lblLocalizingStatus != null)
@@ -887,8 +1210,65 @@ namespace Vps.UnityClient.Navigation
                 UpdateNavigatingHud(in state);
             }
 
+            UpdateRobotSpeechBubble(in state, showNavigating);
+
+            if (showAuthoring)
+            {
+                UpdateAuthoringHud(in state);
+            }
+
             UpdateStartButtonState();
             UpdateDiagnosticsAndTelemetry(in state);
+        }
+
+        private void UpdateAuthoringHud(in NavigationUiState state)
+        {
+            if (authoringCoordsLabel != null)
+            {
+                authoringCoordsLabel.text = string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "X: {0:0.00} m · Z: {1:0.00} m",
+                    state.CurrentAnchorLocalPos.x,
+                    state.CurrentAnchorLocalPos.z);
+            }
+
+            if (authoringSnapPill != null)
+            {
+                authoringSnapPill.text = state.NearestGraphDistanceMeters < 99f
+                    ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "Cách mạng {0:0.0} m", state.NearestGraphDistanceMeters)
+                    : "Chưa có điểm nối";
+            }
+
+            if (authoringStateBadge != null)
+            {
+                authoringStateBadge.text = state.IsRecordingWalk
+                    ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "ĐANG GHI LỘ TRÌNH · {0:0.0} m ({1} điểm)", state.RecordedWalkMeters, state.RecordedPointCount)
+                    : "SẴN SÀNG THÊM ĐIỂM";
+                authoringStateBadge.EnableInClassList("companion-state-badge--arrived", state.IsRecordingWalk);
+                authoringStateBadge.EnableInClassList("companion-state-badge--walking", !state.IsRecordingWalk);
+            }
+
+            if (authoringAvatarBox != null)
+            {
+                authoringAvatarBox.EnableInClassList("companion-avatar-box--arrived", state.IsRecordingWalk);
+                authoringAvatarBox.EnableInClassList("companion-avatar-box--walking", !state.IsRecordingWalk);
+            }
+
+            if (authoringStatusMessage != null)
+            {
+                authoringStatusMessage.text = !string.IsNullOrEmpty(state.StatusMessage)
+                    ? state.StatusMessage
+                    : (state.IsRecordingWalk
+                        ? "Đi bộ tới vị trí điểm đến mới rồi bấm Đặt điểm tại đây."
+                        : "Bấm Bắt đầu ghi đường rồi đi tới nơi, hoặc Đặt điểm tại đây.");
+            }
+
+            if (btnAuthoringToggleWalk != null)
+            {
+                btnAuthoringToggleWalk.text = state.IsRecordingWalk ? "Hủy đoạn ghi" : "Bắt đầu ghi đường";
+                btnAuthoringToggleWalk.EnableInClassList("btn-danger-glass", state.IsRecordingWalk);
+                btnAuthoringToggleWalk.EnableInClassList("btn-secondary-light", !state.IsRecordingWalk);
+            }
         }
 
         private void UpdateIdleReadiness(in NavigationUiState state)
@@ -998,6 +1378,81 @@ namespace Vps.UnityClient.Navigation
             SetDisplay(btnChangeDestination, !state.IsArrived);
         }
 
+        private void UpdateRobotSpeechBubble(in NavigationUiState state, bool showNavigating)
+        {
+            // Keep notification strictly hidden when camera is not pointing at the Robot.
+            bool visible = showNavigating && state.IsArrived && state.HasRobotBubbleAnchor && state.IsRobotInFrontOfCamera;
+            SetDisplay(robotSpeechLayer, visible);
+            if (!visible || robotSpeechBubble == null)
+            {
+                wasRobotBubbleVisible = false;
+                return;
+            }
+
+            if (btnRobotBubbleSpeak != null)
+            {
+                btnRobotBubbleSpeak.EnableInClassList("robot-speak-btn--speaking", state.IsTtsSpeaking);
+            }
+
+            bool hasDescription = !string.IsNullOrWhiteSpace(state.DestinationDescription);
+            if (lblRobotBubbleTitle != null)
+            {
+                lblRobotBubbleTitle.text = hasDescription
+                    ? (string.IsNullOrEmpty(state.DestinationLabel) ? "ROBOT GIỚI THIỆU" : $"ROBOT · {state.DestinationLabel.ToUpperInvariant()}")
+                    : "ĐÃ TỚI ĐIỂM ĐÍCH";
+            }
+
+            if (lblRobotBubbleBody != null)
+            {
+                lblRobotBubbleBody.text = hasDescription
+                    ? state.DestinationDescription.Trim()
+                    : (string.IsNullOrEmpty(state.DestinationLabel)
+                        ? "Chuyến đi đã hoàn tất!"
+                        : $"Bạn đã đến {state.DestinationLabel}!");
+            }
+
+            float panelW = rootElement != null ? rootElement.layout.width : 390f;
+            float panelH = rootElement != null ? rootElement.layout.height : 844f;
+            if (float.IsNaN(panelW) || panelW <= 1f) panelW = 390f;
+            if (float.IsNaN(panelH) || panelH <= 1f) panelH = 844f;
+
+            float bubbleW = robotSpeechBubble.layout.width;
+            float bubbleH = robotSpeechBubble.layout.height;
+            if (float.IsNaN(bubbleW) || bubbleW <= 1f) bubbleW = 240f;
+            if (float.IsNaN(bubbleH) || bubbleH <= 1f) bubbleH = 92f;
+
+            const float marginX = 14f;
+            float minTop = 96f;
+            float maxTop = Mathf.Max(minTop, panelH - bubbleH - 134f);
+
+            float anchorX = state.RobotBubbleViewportPos.x * panelW;
+            float anchorY = state.RobotBubbleViewportPos.y * panelH;
+
+            float targetLeft = Mathf.Clamp(anchorX - bubbleW * 0.5f, marginX, Mathf.Max(marginX, panelW - bubbleW - marginX));
+            float targetTop = Mathf.Clamp(anchorY - bubbleH - 12f, minTop, maxTop);
+
+            if (!wasRobotBubbleVisible || Time.deltaTime <= 0f)
+            {
+                smoothedRobotBubblePos = new Vector2(targetLeft, targetTop);
+            }
+            else
+            {
+                float t = Mathf.Clamp01(Time.deltaTime * 16f);
+                smoothedRobotBubblePos = Vector2.Lerp(smoothedRobotBubblePos, new Vector2(targetLeft, targetTop), t);
+            }
+            wasRobotBubbleVisible = true;
+
+            robotSpeechBubble.style.left = smoothedRobotBubblePos.x;
+            robotSpeechBubble.style.top = smoothedRobotBubblePos.y;
+
+            SetDisplay(robotSpeechTail, true);
+            if (robotSpeechTail != null)
+            {
+                float tailLeft = Mathf.Clamp(anchorX - smoothedRobotBubblePos.x - 6f, 16f, Mathf.Max(16f, bubbleW - 28f));
+                robotSpeechTail.style.left = tailLeft;
+            }
+        }
+
         private void UpdateCompanionVisualState(in NavigationUiState state)
         {
             if (companionAvatarBox != null)
@@ -1074,6 +1529,29 @@ namespace Vps.UnityClient.Navigation
                     ? GetCompactOcclusionLabel(state.EffectiveOcclusionMode)
                     : "Chưa bật";
             }
+
+            if (lblOcclusionStatus != null)
+            {
+                string fallback = experience != null ? experience.OcclusionFallbackReason : string.Empty;
+                string diagnostics = experience != null ? experience.OcclusionDiagnostics : string.Empty;
+                string status = diagnostics;
+                if (!string.IsNullOrEmpty(fallback))
+                {
+                    status = string.IsNullOrEmpty(status) ? fallback : status + "\n" + fallback;
+                }
+                lblOcclusionStatus.text = status;
+            }
+
+            if (!string.IsNullOrEmpty(state.TtsStatusSummary))
+            {
+                UpdateTtsStatusLabel(state.TtsStatusSummary);
+            }
+        }
+
+        private void UpdateTtsStatusLabel(string statusSummary)
+        {
+            if (lblTtsStatus == null) return;
+            lblTtsStatus.text = string.IsNullOrWhiteSpace(statusSummary) ? "Google Android TTS" : statusSummary;
         }
 
         private static string GetCompactOcclusionLabel(ArOcclusionQualityMode mode)
@@ -1316,6 +1794,7 @@ namespace Vps.UnityClient.Navigation
 
                 textCol.Add(titleLbl);
                 textCol.Add(catLbl);
+                TryAddDescriptionPreview(textCol, poi.Description);
 
                 var radio = new VisualElement();
                 radio.name = "poi-radio";
@@ -1509,10 +1988,19 @@ namespace Vps.UnityClient.Navigation
                 }
 
                 toggleSmoothEdges?.SetValueWithoutNotify(experience.SmoothEdgesOcclusion);
+                toggleStableOcclusionDistance?.SetValueWithoutNotify(experience.StabilizedOcclusionDistance);
                 toggleSemantic?.SetValueWithoutNotify(experience.SemanticSuppressionOcclusion);
                 toggleSuppressGround?.SetValueWithoutNotify(experience.SuppressGroundOcclusion);
                 toggleDepthVis?.SetValueWithoutNotify(experience.DepthVisualizationOcclusion);
                 toggleMeshDebug?.SetValueWithoutNotify(experience.MeshDebugOcclusion);
+                toggleTtsEnabled?.SetValueWithoutNotify(experience.TtsEnabled);
+                if (sliderTtsRate != null)
+                {
+                    sliderTtsRate.SetValueWithoutNotify(experience.TtsSpeakingRate);
+                    if (valTtsRate != null) valTtsRate.text = $"{experience.TtsSpeakingRate:0.00}×";
+                }
+                ttsApiKeyInput?.SetValueWithoutNotify(experience.TtsCloudApiKey ?? string.Empty);
+                UpdateTtsStatusLabel(experience.TtsStatusSummary);
 
                 UpdateSwatchSelectionVisuals();
                 UpdateOcclusionCardSelectionVisuals();
@@ -1615,6 +2103,259 @@ namespace Vps.UnityClient.Navigation
             }
 
             return NavigationUiVectorIcons.IconKind.Pin;
+        }
+
+        public void OpenMapEditorModal(IReadOnlyList<PublishedGraphPoiV2> pois, bool isUsingLocalOverride)
+        {
+            if (modalMapEditor == null) return;
+            isMapEditorOpen = true;
+            resetLocalConfirmPending = false;
+            if (btnResetLocalManifest != null) btnResetLocalManifest.text = "Khôi phục gốc";
+            ShowMapEditorFeedback(null, false);
+            RefreshMapEditorList(pois, isUsingLocalOverride, null, false);
+            modalMapEditor.style.display = DisplayStyle.Flex;
+            modalMapEditor.RemoveFromClassList("modal-overlay--hidden");
+            ApplySafeArea();
+        }
+
+        public void CloseMapEditorModal()
+        {
+            if (modalMapEditor == null) return;
+            isMapEditorOpen = false;
+            resetLocalConfirmPending = false;
+            if (btnResetLocalManifest != null) btnResetLocalManifest.text = "Khôi phục gốc";
+            modalMapEditor.AddToClassList("modal-overlay--hidden");
+            modalMapEditor.style.display = DisplayStyle.None;
+        }
+
+        public void RefreshMapEditorList(
+            IReadOnlyList<PublishedGraphPoiV2> pois,
+            bool isUsingLocalOverride,
+            string feedbackMessage,
+            bool isError)
+        {
+            if (mapEditorItemsContainer == null) return;
+            mapEditorItemsContainer.Clear();
+
+            int count = pois != null ? pois.Count : 0;
+            if (mapEditorCountBadge != null) mapEditorCountBadge.text = $"{count} điểm";
+            SetDisplay(mapEditorCustomBadge, isUsingLocalOverride);
+            if (btnResetLocalManifest != null) btnResetLocalManifest.SetEnabled(isUsingLocalOverride);
+            if (feedbackMessage != null) ShowMapEditorFeedback(feedbackMessage, isError);
+
+            if (pois == null) return;
+
+            var editTex = NavigationUiVectorIcons.Get(NavigationUiVectorIcons.IconKind.Edit);
+            var trashTex = NavigationUiVectorIcons.Get(NavigationUiVectorIcons.IconKind.Trash);
+            bool canDelete = count > 1;
+
+            for (int i = 0; i < pois.Count; i++)
+            {
+                PublishedGraphPoiV2 poi = pois[i];
+                if (poi == null) continue;
+
+                var card = new VisualElement();
+                card.AddToClassList("poi-item");
+                card.pickingMode = PickingMode.Position;
+
+                var iconBox = new VisualElement();
+                iconBox.AddToClassList("poi-icon-box");
+                iconBox.pickingMode = PickingMode.Ignore;
+
+                var iconEl = new VisualElement();
+                iconEl.AddToClassList("vec-icon");
+                iconEl.AddToClassList("vec-icon--20");
+                iconEl.AddToClassList("vec-icon--slate");
+                iconEl.pickingMode = PickingMode.Ignore;
+                var glyphTex = NavigationUiVectorIcons.Get(GetPoiIconKind(poi.Category));
+                if (glyphTex != null) iconEl.style.backgroundImage = new StyleBackground(glyphTex);
+                iconBox.Add(iconEl);
+
+                var textCol = new VisualElement();
+                textCol.AddToClassList("poi-text-col");
+                textCol.pickingMode = PickingMode.Ignore;
+
+                var titleLbl = new Label(SiteGraphV2NavigationExperience.Capitalize(poi.Label));
+                titleLbl.AddToClassList("poi-title");
+                titleLbl.pickingMode = PickingMode.Ignore;
+
+                string coords = poi.AnchorLocal != null
+                    ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "({0:0.0}, {1:0.0}) m", poi.AnchorLocal.X, poi.AnchorLocal.Z)
+                    : string.Empty;
+                var catLbl = new Label($"{FormatCategoryLabel(poi.Category)} · {coords}");
+                catLbl.AddToClassList("poi-category");
+                catLbl.pickingMode = PickingMode.Ignore;
+
+                textCol.Add(titleLbl);
+                textCol.Add(catLbl);
+                TryAddDescriptionPreview(textCol, poi.Description);
+
+                var actions = new VisualElement();
+                actions.AddToClassList("map-editor-item-actions");
+                actions.pickingMode = PickingMode.Position;
+
+                var btnEdit = new Button();
+                btnEdit.AddToClassList("btn-row-icon");
+                var editIcon = new VisualElement();
+                editIcon.AddToClassList("vec-icon");
+                editIcon.AddToClassList("vec-icon--16");
+                editIcon.AddToClassList("vec-icon--slate");
+                editIcon.pickingMode = PickingMode.Ignore;
+                if (editTex != null) editIcon.style.backgroundImage = new StyleBackground(editTex);
+                btnEdit.Add(editIcon);
+                PublishedGraphPoiV2 capturedPoi = poi;
+                btnEdit.clicked += () => OpenPoiFormForEdit(capturedPoi);
+
+                var btnDelete = new Button();
+                btnDelete.AddToClassList("btn-row-icon");
+                btnDelete.AddToClassList("btn-row-icon--danger");
+                btnDelete.SetEnabled(canDelete);
+                var delIcon = new VisualElement();
+                delIcon.AddToClassList("vec-icon");
+                delIcon.AddToClassList("vec-icon--16");
+                delIcon.AddToClassList("vec-icon--danger");
+                delIcon.pickingMode = PickingMode.Ignore;
+                if (trashTex != null) delIcon.style.backgroundImage = new StyleBackground(trashTex);
+                btnDelete.Add(delIcon);
+                string poiIdToDelete = poi.Id;
+                btnDelete.clicked += () => experience?.OnDeleteExistingPoiRequested(poiIdToDelete);
+
+                actions.Add(btnEdit);
+                actions.Add(btnDelete);
+
+                card.Add(iconBox);
+                card.Add(textCol);
+                card.Add(actions);
+                mapEditorItemsContainer.Add(card);
+            }
+        }
+
+        public void ShowMapEditorFeedback(string message, bool isError)
+        {
+            if (mapEditorFeedback == null || lblMapEditorFeedback == null) return;
+            bool visible = !string.IsNullOrWhiteSpace(message);
+            SetDisplay(mapEditorFeedback, visible);
+            mapEditorFeedback.EnableInClassList("map-editor-feedback--error", isError);
+            if (visible) lblMapEditorFeedback.text = message;
+        }
+
+        public void OpenPoiFormForNew(string connectionSummary)
+        {
+            if (modalPoiForm == null) return;
+            isPoiFormOpen = true;
+            editingPoiId = null;
+            poiFormSelectedCategory = "room";
+
+            if (lblPoiFormTitle != null) lblPoiFormTitle.text = "Lưu điểm đến mới";
+            if (lblPoiFormSubtitle != null) lblPoiFormSubtitle.text = "Đặt tên và phân loại để lưu trực tiếp vào máy.";
+            if (lblPoiFormConnection != null)
+            {
+                lblPoiFormConnection.text = string.IsNullOrEmpty(connectionSummary)
+                    ? "Sẽ kết nối vào đồ thị dẫn đường hiện tại."
+                    : connectionSummary;
+            }
+            SetDisplay(poiFormConnectionBox, true);
+            SetPoiFormError(null);
+
+            if (poiFormLabelInput != null)
+            {
+                poiFormLabelInput.SetValueWithoutNotify(string.Empty);
+                poiFormLabelInput.Focus();
+            }
+            if (poiFormDescriptionInput != null)
+            {
+                poiFormDescriptionInput.SetValueWithoutNotify(string.Empty);
+            }
+            UpdatePoiFormCategoryHighlights();
+
+            modalPoiForm.style.display = DisplayStyle.Flex;
+            modalPoiForm.RemoveFromClassList("modal-overlay--hidden");
+            ApplySafeArea();
+        }
+
+        public void OpenPoiFormForEdit(PublishedGraphPoiV2 poi)
+        {
+            if (modalPoiForm == null || poi == null) return;
+            isPoiFormOpen = true;
+            editingPoiId = poi.Id;
+            poiFormSelectedCategory = LocalSiteGraphStore.NormalizeCategory(poi.Category);
+
+            if (lblPoiFormTitle != null) lblPoiFormTitle.text = "Sửa điểm đến";
+            if (lblPoiFormSubtitle != null) lblPoiFormSubtitle.text = "Đổi tên, phân loại hoặc lời giới thiệu khi Robot tới nơi.";
+            SetDisplay(poiFormConnectionBox, false);
+            SetPoiFormError(null);
+
+            if (poiFormLabelInput != null)
+            {
+                poiFormLabelInput.SetValueWithoutNotify(poi.Label ?? string.Empty);
+                poiFormLabelInput.Focus();
+            }
+            if (poiFormDescriptionInput != null)
+            {
+                poiFormDescriptionInput.SetValueWithoutNotify(poi.Description ?? string.Empty);
+            }
+            UpdatePoiFormCategoryHighlights();
+
+            modalPoiForm.style.display = DisplayStyle.Flex;
+            modalPoiForm.RemoveFromClassList("modal-overlay--hidden");
+            ApplySafeArea();
+        }
+
+        public void ClosePoiFormModal()
+        {
+            if (modalPoiForm == null) return;
+            isPoiFormOpen = false;
+            editingPoiId = null;
+            SetPoiFormError(null);
+            modalPoiForm.AddToClassList("modal-overlay--hidden");
+            modalPoiForm.style.display = DisplayStyle.None;
+        }
+
+        private void HandlePoiFormSubmit()
+        {
+            if (experience == null) return;
+            string rawLabel = poiFormLabelInput != null ? poiFormLabelInput.value : string.Empty;
+            string rawDescription = poiFormDescriptionInput != null ? poiFormDescriptionInput.value : string.Empty;
+            string error;
+            bool ok = string.IsNullOrEmpty(editingPoiId)
+                ? experience.OnSaveNewPoiRequested(rawLabel, poiFormSelectedCategory, rawDescription, out error)
+                : experience.OnUpdateExistingPoiRequested(editingPoiId, rawLabel, poiFormSelectedCategory, rawDescription, out error);
+
+            if (!ok)
+            {
+                SetPoiFormError(string.IsNullOrWhiteSpace(error) ? "Không thể lưu điểm đến." : error);
+                return;
+            }
+
+            ClosePoiFormModal();
+        }
+
+        private static void TryAddDescriptionPreview(VisualElement textCol, string description)
+        {
+            if (textCol == null || string.IsNullOrWhiteSpace(description)) return;
+            var descLbl = new Label(description.Trim());
+            descLbl.AddToClassList("poi-description-preview");
+            descLbl.pickingMode = PickingMode.Ignore;
+            textCol.Add(descLbl);
+        }
+
+        private void SetPoiFormError(string message)
+        {
+            if (lblPoiFormError == null) return;
+            bool visible = !string.IsNullOrWhiteSpace(message);
+            SetDisplay(lblPoiFormError, visible);
+            if (visible) lblPoiFormError.text = message;
+        }
+
+        private void UpdatePoiFormCategoryHighlights()
+        {
+            for (int i = 0; i < poiFormCategoryButtons.Count; i++)
+            {
+                Button btn = poiFormCategoryButtons[i];
+                bool selected = btn.userData is string key &&
+                    string.Equals(key, poiFormSelectedCategory, StringComparison.Ordinal);
+                btn.EnableInClassList("filter-chip--active", selected);
+            }
         }
 
         private static void SetDisplay(VisualElement element, bool visible)

@@ -5,6 +5,7 @@
     "NianticSpatial.NSDK.AR",
     "Unity.XR.ARFoundation",
     "Unity.XR.ARSubsystems",
+    "Unity.XR.Management",
     "Unity.InputSystem",
     "Unity.XR.CoreUtils"
   ],

@@ -25,7 +25,7 @@
             <!-- TOP HUD AREA -->
             <ui:VisualElement name="header-area" class="header-area" picking-mode="Ignore">
 
-                <!-- 1. IDLE HEADER: Brand identity + Settings -->
+                <!-- 1. IDLE HEADER: Brand identity + Add POI + Settings -->
                 <ui:VisualElement name="idle-header" class="header-bar header-bar--idle" picking-mode="Position">
                     <ui:VisualElement class="brand-cluster" picking-mode="Ignore">
                         <ui:VisualElement class="brand-emblem" picking-mode="Ignore">
@@ -36,9 +36,15 @@
                             <ui:Label text="Dẫn đường trong nhà" class="brand-subtitle" picking-mode="Ignore" />
                         </ui:VisualElement>
                     </ui:VisualElement>
-                    <ui:Button name="btn-idle-settings" class="btn-icon btn-icon--light-glass" picking-mode="Position">
-                        <ui:VisualElement name="icon-idle-settings" class="vec-icon vec-icon--20 vec-icon--slate" picking-mode="Ignore" />
-                    </ui:Button>
+                    <ui:VisualElement class="idle-header-actions" picking-mode="Position">
+                        <ui:Button name="btn-open-map-editor" class="btn-pill btn-soft-cyan btn-compact btn-header-add" picking-mode="Position">
+                            <ui:VisualElement name="icon-idle-add-poi" class="vec-icon vec-icon--14 vec-icon--brand" picking-mode="Ignore" />
+                            <ui:Label text="Thêm điểm" class="btn-header-add-label" picking-mode="Ignore" />
+                        </ui:Button>
+                        <ui:Button name="btn-idle-settings" class="btn-icon btn-icon--light-glass" picking-mode="Position">
+                            <ui:VisualElement name="icon-idle-settings" class="vec-icon vec-icon--20 vec-icon--slate" picking-mode="Ignore" />
+                        </ui:Button>
+                    </ui:VisualElement>
                 </ui:VisualElement>
 
                 <!-- 2. LOCALIZING HEADER: Back + Live status + Target + Settings -->
@@ -80,6 +86,25 @@
                     </ui:VisualElement>
                     <ui:VisualElement name="nav-progress-track" class="nav-progress-track" picking-mode="Ignore">
                         <ui:VisualElement name="nav-progress-fill" class="nav-progress-fill" picking-mode="Ignore" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <!-- 4. OFFLINE AR AUTHORING HEADER -->
+                <ui:VisualElement name="authoring-header" class="header-bar header-bar--nav-glass" style="display: none;" picking-mode="Position">
+                    <ui:VisualElement class="nav-header-top-row" picking-mode="Ignore">
+                        <ui:VisualElement class="nav-pin-badge nav-pin-badge--arrived" picking-mode="Ignore">
+                            <ui:VisualElement name="icon-authoring-pin" class="vec-icon vec-icon--18 vec-icon--emerald" picking-mode="Ignore" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="header-center-col" picking-mode="Ignore">
+                            <ui:Label text="CHỈNH SỬA BẢN ĐỒ OFFLINE" class="eyebrow-tag eyebrow-tag--emerald" picking-mode="Ignore" />
+                            <ui:Label name="authoring-coords-label" text="X: 0.00 m · Z: 0.00 m" class="header-glass-title" picking-mode="Ignore" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="nav-header-actions" picking-mode="Position">
+                            <ui:VisualElement class="distance-pill distance-pill--arrived" picking-mode="Ignore">
+                                <ui:Label name="authoring-snap-pill" text="Cách mạng 0.0 m" class="distance-pill-text distance-pill-text--arrived" picking-mode="Ignore" />
+                            </ui:VisualElement>
+                            <ui:Button name="btn-authoring-done" text="Hoàn tất" class="btn-pill btn-soft-cyan btn-compact" picking-mode="Position" />
+                        </ui:VisualElement>
                     </ui:VisualElement>
                 </ui:VisualElement>
 
@@ -176,11 +201,48 @@
                         </ui:Button>
                     </ui:VisualElement>
                 </ui:VisualElement>
+
+                <!-- 4. OFFLINE AR AUTHORING BOTTOM DOCK -->
+                <ui:VisualElement name="authoring-dock" class="bottom-dock bottom-dock--ar-glass" style="display: none;" picking-mode="Position">
+                    <ui:VisualElement class="ar-dock-row" picking-mode="Ignore">
+                        <ui:VisualElement name="authoring-avatar-box" class="companion-avatar-box companion-avatar-box--walking" picking-mode="Ignore">
+                            <ui:VisualElement name="icon-authoring-route" class="vec-icon vec-icon--22 vec-icon--brand" picking-mode="Ignore" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="ar-dock-text-col" picking-mode="Ignore">
+                            <ui:Label name="authoring-state-badge" text="SẴN SÀNG THÊM ĐIỂM" class="companion-state-badge companion-state-badge--walking" picking-mode="Ignore" />
+                            <ui:Label name="authoring-status-message" text="Bấm Ghi đường rồi đi tới điểm mới, hoặc Đặt điểm tại đây." class="ar-dock-message" picking-mode="Ignore" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+                    <ui:VisualElement class="authoring-actions-row" picking-mode="Position">
+                        <ui:Button name="btn-authoring-toggle-walk" text="Bắt đầu ghi đường" class="btn-pill btn-secondary-light authoring-btn-half" picking-mode="Position" />
+                        <ui:Button name="btn-authoring-mark-poi" class="btn-pill btn-primary authoring-btn-half" picking-mode="Position">
+                            <ui:VisualElement name="icon-authoring-mark" class="vec-icon vec-icon--16 vec-icon--white" picking-mode="Ignore" />
+                            <ui:Label text="Đặt điểm tại đây" class="btn-finish-label" picking-mode="Ignore" />
+                        </ui:Button>
+                    </ui:VisualElement>
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- FLOATING AR NOTIFICATION BUBBLE ANCHORED TO 3D ROBOT -->
+        <ui:VisualElement name="robot-speech-layer" class="robot-speech-layer" style="display: none;" picking-mode="Ignore">
+            <ui:VisualElement name="robot-speech-bubble" class="robot-speech-bubble" picking-mode="Position">
+                <ui:VisualElement class="robot-speech-header" picking-mode="Ignore">
+                    <ui:VisualElement class="robot-speech-badge" picking-mode="Ignore">
+                        <ui:VisualElement name="icon-robot-bubble" class="vec-icon vec-icon--14 vec-icon--emerald" picking-mode="Ignore" />
+                    </ui:VisualElement>
+                    <ui:Label name="lbl-robot-bubble-title" text="ROBOT GIỚI THIỆU" class="robot-speech-title" picking-mode="Ignore" />
+                    <ui:Button name="btn-robot-bubble-speak" class="robot-speak-btn" picking-mode="Position">
+                        <ui:VisualElement name="icon-robot-bubble-speak" class="vec-icon vec-icon--14 vec-icon--emerald" picking-mode="Ignore" />
+                    </ui:Button>
+                </ui:VisualElement>
+                <ui:Label name="lbl-robot-bubble-body" text="" class="robot-speech-body" picking-mode="Ignore" />
+                <ui:VisualElement name="robot-speech-tail" class="robot-speech-tail" picking-mode="Ignore" />
             </ui:VisualElement>
         </ui:VisualElement>
 
         <!-- DESTINATION PICKER MODAL BOTTOM SHEET -->
-        <ui:VisualElement name="modal-destination-picker" class="modal-overlay modal-overlay--hidden" picking-mode="Position">
+        <ui:VisualElement name="modal-destination-picker" class="modal-overlay modal-overlay--hidden" style="display: none;" picking-mode="Position">
             <ui:VisualElement name="destination-sheet" class="bottom-sheet" picking-mode="Position">
                 <ui:VisualElement class="sheet-handle-wrap" picking-mode="Ignore">
                     <ui:VisualElement class="sheet-handle" picking-mode="Ignore" />
@@ -194,9 +256,12 @@
                         </ui:VisualElement>
                         <ui:Label text="Chọn một địa điểm trên sơ đồ để bắt đầu dẫn đường AR." class="modal-subtitle" picking-mode="Ignore" />
                     </ui:VisualElement>
-                    <ui:Button name="btn-close-destination-picker" class="btn-icon btn-icon--light-close" picking-mode="Position">
-                        <ui:VisualElement name="icon-close-picker" class="vec-icon vec-icon--16 vec-icon--slate" picking-mode="Ignore" />
-                    </ui:Button>
+                    <ui:VisualElement class="picker-header-actions" picking-mode="Position">
+                        <ui:Button name="btn-picker-manage-pois" text="Quản lý" class="btn-pill btn-soft-cyan btn-compact btn-picker-manage" picking-mode="Position" />
+                        <ui:Button name="btn-close-destination-picker" class="btn-icon btn-icon--light-close" picking-mode="Position">
+                            <ui:VisualElement name="icon-close-picker" class="vec-icon vec-icon--16 vec-icon--slate" picking-mode="Ignore" />
+                        </ui:Button>
+                    </ui:VisualElement>
                 </ui:VisualElement>
 
                 <!-- Search Bar -->
@@ -241,7 +306,7 @@
         </ui:VisualElement>
 
         <!-- SETTINGS MODAL BOTTOM SHEET -->
-        <ui:VisualElement name="modal-settings" class="modal-overlay modal-overlay--hidden" picking-mode="Position">
+        <ui:VisualElement name="modal-settings" class="modal-overlay modal-overlay--hidden" style="display: none;" picking-mode="Position">
             <ui:VisualElement name="settings-sheet" class="bottom-sheet bottom-sheet--settings" picking-mode="Position">
                 <ui:VisualElement class="sheet-handle-wrap" picking-mode="Ignore">
                     <ui:VisualElement class="sheet-handle" picking-mode="Ignore" />
@@ -313,7 +378,7 @@
                                 <ui:Label text="Nổi trên mặt sàn (Bias)" class="slider-label" />
                                 <ui:Label name="val-route-depth-bias" text="0.05 m" class="slider-value" />
                             </ui:VisualElement>
-                            <ui:Slider name="slider-route-depth-bias" low-value="0.0" high-value="0.35" value="0.05" class="settings-range-slider" />
+                            <ui:Slider name="slider-route-depth-bias" low-value="0.0" high-value="0.15" value="0.03" class="settings-range-slider" />
                         </ui:VisualElement>
                     </ui:VisualElement>
 
@@ -345,9 +410,9 @@
                         <ui:VisualElement class="slider-group" picking-mode="Position">
                             <ui:VisualElement class="slider-header" picking-mode="Ignore">
                                 <ui:Label text="Khoảng cách dẫn trước" class="slider-label" />
-                                <ui:Label name="val-lead-distance" text="1.80 m" class="slider-value" />
+                                <ui:Label name="val-lead-distance" text="2.00 m" class="slider-value" />
                             </ui:VisualElement>
-                            <ui:Slider name="slider-lead-distance" low-value="1.2" high-value="3.0" value="1.8" class="settings-range-slider" />
+                            <ui:Slider name="slider-lead-distance" low-value="1.2" high-value="3.0" value="2.0" class="settings-range-slider" />
                         </ui:VisualElement>
 
                         <ui:VisualElement class="slider-group slider-group--last" picking-mode="Position">
@@ -355,7 +420,43 @@
                                 <ui:Label text="Hạ sát mặt đất" class="slider-label" />
                                 <ui:Label name="val-ground-drop" text="0.08 m" class="slider-value" />
                             </ui:VisualElement>
-                            <ui:Slider name="slider-ground-drop" low-value="0.0" high-value="0.4" value="0.08" class="settings-range-slider" />
+                            <ui:Slider name="slider-ground-drop" low-value="0.0" high-value="0.15" value="0.015" class="settings-range-slider" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+
+                    <!-- Section 2b: Voice & Google TTS -->
+                    <ui:VisualElement class="settings-card" picking-mode="Position">
+                        <ui:VisualElement class="settings-card-header" picking-mode="Ignore">
+                            <ui:VisualElement class="section-icon-chip section-icon-chip--emerald" picking-mode="Ignore">
+                                <ui:VisualElement name="icon-sec-tts" class="vec-icon vec-icon--16 vec-icon--emerald" picking-mode="Ignore" />
+                            </ui:VisualElement>
+                            <ui:Label text="Giọng nói Robot (Google TTS)" class="section-title" picking-mode="Ignore" />
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="toggle-group" picking-mode="Position">
+                            <ui:Toggle name="toggle-tts-enabled" label="Tự động đọc giới thiệu khi tới điểm đích" class="settings-toggle settings-switch settings-toggle--last" />
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="slider-group" picking-mode="Position">
+                            <ui:VisualElement class="slider-header" picking-mode="Ignore">
+                                <ui:Label text="Tốc độ giọng nói" class="slider-label" />
+                                <ui:Label name="val-tts-rate" text="1.00×" class="slider-value" />
+                            </ui:VisualElement>
+                            <ui:Slider name="slider-tts-rate" low-value="0.75" high-value="1.35" value="1.0" class="settings-range-slider" />
+                        </ui:VisualElement>
+
+                        <ui:Label text="Google Cloud TTS API Key (tùy chọn)" class="poi-form-field-label" picking-mode="Ignore" />
+                        <ui:VisualElement name="tts-api-key-box" class="search-field-container tts-api-key-box" picking-mode="Position">
+                            <ui:TextField name="tts-api-key-input" placeholder-text="Để trống để dùng Google Translate TTS mặc định…" class="search-input poi-form-text-input" />
+                        </ui:VisualElement>
+                        <ui:Label text="Mặc định dùng giọng Google Translate TTS (online) và tự chuyển sang Google Android TTS khi mất mạng." class="tts-api-hint" picking-mode="Ignore" />
+
+                        <ui:VisualElement class="tts-status-row" picking-mode="Position">
+                            <ui:Label name="lbl-tts-status" text="Google Translate TTS (vi)" class="tts-status-label" picking-mode="Ignore" />
+                            <ui:Button name="btn-tts-test" class="btn-pill btn-soft-cyan btn-compact tts-test-btn" picking-mode="Position">
+                                <ui:VisualElement name="icon-tts-test" class="vec-icon vec-icon--14 vec-icon--brand" picking-mode="Ignore" />
+                                <ui:Label text="Nghe thử" class="btn-tts-test-label" picking-mode="Ignore" />
+                            </ui:Button>
                         </ui:VisualElement>
                     </ui:VisualElement>
 
@@ -370,8 +471,11 @@
 
                         <ui:VisualElement name="container-occlusion-modes" class="occlusion-grid" picking-mode="Position" />
 
+                        <ui:Label name="lbl-occlusion-status" text="" class="occlusion-status" picking-mode="Ignore" />
+
                         <ui:VisualElement class="toggle-group" picking-mode="Position">
                             <ui:Toggle name="toggle-smooth-edges" label="Làm mượt viền chiều sâu" class="settings-toggle settings-switch" />
+                            <ui:Toggle name="toggle-stable-occlusion-distance" label="Ổn định khoảng cách che khuất" class="settings-toggle settings-switch" />
                             <ui:Toggle name="toggle-semantic" label="Tự động lọc vùng bầu trời" class="settings-toggle settings-switch" />
                             <ui:Toggle name="toggle-suppress-ground" label="Giữ vệt sáng rõ trên mặt sàn gần" class="settings-toggle settings-switch" />
                             <ui:Toggle name="toggle-depth-vis" label="Bản đồ nhiệt chiều sâu (Debug)" class="settings-toggle settings-switch" />
@@ -416,6 +520,98 @@
                 <ui:VisualElement class="modal-footer modal-footer--settings" picking-mode="Position">
                     <ui:Button name="btn-settings-reset" text="Khôi phục mặc định" class="btn-pill btn-secondary-light modal-footer-btn-half" picking-mode="Position" />
                     <ui:Button name="btn-settings-done" text="Hoàn tất" class="btn-pill btn-primary modal-footer-btn-half" picking-mode="Position" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- OFFLINE MAP / DESTINATION MANAGER MODAL BOTTOM SHEET -->
+        <ui:VisualElement name="modal-map-editor" class="modal-overlay modal-overlay--hidden" style="display: none;" picking-mode="Position">
+            <ui:VisualElement name="map-editor-sheet" class="bottom-sheet" picking-mode="Position">
+                <ui:VisualElement class="sheet-handle-wrap" picking-mode="Ignore">
+                    <ui:VisualElement class="sheet-handle" picking-mode="Ignore" />
+                </ui:VisualElement>
+
+                <ui:VisualElement class="modal-header" picking-mode="Ignore">
+                    <ui:VisualElement class="modal-title-group" picking-mode="Ignore">
+                        <ui:VisualElement class="modal-title-row" picking-mode="Ignore">
+                            <ui:Label text="Quản lý điểm đến" class="modal-title" picking-mode="Ignore" />
+                            <ui:Label name="map-editor-count-badge" text="0 điểm" class="modal-count-chip" picking-mode="Ignore" />
+                            <ui:Label name="map-editor-custom-badge" text="Bản sửa trên máy" class="modal-custom-chip" style="display: none;" picking-mode="Ignore" />
+                        </ui:VisualElement>
+                        <ui:Label text="Thêm, đổi tên hoặc xóa điểm đến trực tiếp trên điện thoại (không cần backend)." class="modal-subtitle" picking-mode="Ignore" />
+                    </ui:VisualElement>
+                    <ui:Button name="btn-close-map-editor" class="btn-icon btn-icon--light-close" picking-mode="Position">
+                        <ui:VisualElement name="icon-close-map-editor" class="vec-icon vec-icon--16 vec-icon--slate" picking-mode="Ignore" />
+                    </ui:Button>
+                </ui:VisualElement>
+
+                <ui:VisualElement name="map-editor-feedback" class="map-editor-feedback" style="display: none;" picking-mode="Ignore">
+                    <ui:Label name="lbl-map-editor-feedback" text="" class="map-editor-feedback-text" picking-mode="Ignore" />
+                </ui:VisualElement>
+
+                <ui:ScrollView name="map-editor-scroll-view" horizontal-scroller-visibility="Hidden" class="poi-scroll-view" picking-mode="Position">
+                    <ui:VisualElement name="map-editor-items-container" class="poi-items-container" picking-mode="Position" />
+                </ui:ScrollView>
+
+                <ui:VisualElement name="map-editor-footer" class="modal-footer modal-footer--picker" picking-mode="Position">
+                    <ui:Button name="btn-start-ar-authoring" class="btn-pill btn-primary btn-large" picking-mode="Position">
+                        <ui:VisualElement name="icon-start-ar-authoring" class="vec-icon vec-icon--18 vec-icon--white" picking-mode="Ignore" />
+                        <ui:Label text="Ghi tuyến &amp; Thêm điểm mới (AR)" class="btn-primary-label" picking-mode="Ignore" />
+                    </ui:Button>
+                    <ui:VisualElement class="map-editor-utility-row" picking-mode="Position">
+                        <ui:Button name="btn-export-manifest-json" class="btn-pill btn-secondary-light map-editor-utility-btn" picking-mode="Position">
+                            <ui:VisualElement name="icon-export-json" class="vec-icon vec-icon--14 vec-icon--slate" picking-mode="Ignore" />
+                            <ui:Label text="Sao chép JSON" class="btn-utility-label" picking-mode="Ignore" />
+                        </ui:Button>
+                        <ui:Button name="btn-reset-local-manifest" text="Khôi phục gốc" class="btn-pill btn-danger-glass map-editor-utility-btn" picking-mode="Position" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- ADD / EDIT POI MODAL -->
+        <ui:VisualElement name="modal-poi-form" class="modal-overlay modal-overlay--hidden" style="display: none;" picking-mode="Position">
+            <ui:VisualElement name="poi-form-sheet" class="bottom-sheet" picking-mode="Position">
+                <ui:VisualElement class="sheet-handle-wrap" picking-mode="Ignore">
+                    <ui:VisualElement class="sheet-handle" picking-mode="Ignore" />
+                </ui:VisualElement>
+
+                <ui:VisualElement class="modal-header" picking-mode="Ignore">
+                    <ui:VisualElement class="modal-title-group" picking-mode="Ignore">
+                        <ui:Label name="lbl-poi-form-title" text="Lưu điểm đến mới" class="modal-title" picking-mode="Ignore" />
+                        <ui:Label name="lbl-poi-form-subtitle" text="Đặt tên và chọn phân loại để lưu vào bản đồ trên máy." class="modal-subtitle" picking-mode="Ignore" />
+                    </ui:VisualElement>
+                    <ui:Button name="btn-close-poi-form" class="btn-icon btn-icon--light-close" picking-mode="Position">
+                        <ui:VisualElement name="icon-close-poi-form" class="vec-icon vec-icon--16 vec-icon--slate" picking-mode="Ignore" />
+                    </ui:Button>
+                </ui:VisualElement>
+
+                <ui:ScrollView name="poi-form-scroll-view" horizontal-scroller-visibility="Hidden" class="poi-form-scroll-view" picking-mode="Position">
+                    <ui:VisualElement class="poi-form-body" picking-mode="Position">
+                        <ui:VisualElement name="poi-form-connection-box" class="poi-form-connection-box" picking-mode="Ignore">
+                            <ui:Label name="lbl-poi-form-connection" text="Đang kết nối vào đồ thị hiện tại…" class="poi-form-connection-text" picking-mode="Ignore" />
+                        </ui:VisualElement>
+
+                        <ui:Label name="lbl-poi-form-error" text="" class="poi-form-error" style="display: none;" picking-mode="Ignore" />
+
+                        <ui:Label text="Tên điểm đến" class="poi-form-field-label" picking-mode="Ignore" />
+                        <ui:VisualElement name="poi-form-input-box" class="search-field-container poi-form-input-box" picking-mode="Position">
+                            <ui:TextField name="poi-form-label-input" placeholder-text="Ví dụ: Phòng họp B, Quầy lễ tân…" class="search-input poi-form-text-input" />
+                        </ui:VisualElement>
+
+                        <ui:Label text="Phân loại" class="poi-form-field-label" picking-mode="Ignore" />
+                        <ui:VisualElement name="poi-form-category-container" class="poi-form-category-grid" picking-mode="Position" />
+
+                        <ui:Label text="Giới thiệu điểm đến (Robot đọc khi tới nơi)" class="poi-form-field-label poi-form-field-label--spaced" picking-mode="Ignore" />
+                        <ui:VisualElement name="poi-form-description-box" class="poi-form-description-box" picking-mode="Position">
+                            <ui:TextField name="poi-form-description-input" multiline="true" placeholder-text="Ví dụ: Đây là phòng họp lớn tầng 2, có máy chiếu và sức chứa 20 người…" class="search-input poi-form-description-input" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+                </ui:ScrollView>
+
+                <ui:VisualElement name="poi-form-footer" class="modal-footer modal-footer--settings" picking-mode="Position">
+                    <ui:Button name="btn-poi-form-cancel" text="Hủy" class="btn-pill btn-secondary-light modal-footer-btn-half" picking-mode="Position" />
+                    <ui:Button name="btn-poi-form-save" text="Lưu điểm đến" class="btn-pill btn-primary modal-footer-btn-half" picking-mode="Position" />
                 </ui:VisualElement>
             </ui:VisualElement>
         </ui:VisualElement>

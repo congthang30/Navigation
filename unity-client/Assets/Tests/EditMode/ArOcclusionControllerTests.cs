@@ -37,7 +37,8 @@ namespace Vps.UnityClient.Tests.EditMode
                 Assert.That(occMgr, Is.Not.Null);
                 Assert.That(nsdkOcc, Is.Not.Null);
                 Assert.That(occMgr.enabled, Is.True);
-                Assert.That(occMgr.requestedEnvironmentDepthMode, Is.EqualTo(EnvironmentDepthMode.Fastest));
+                Assert.That(occMgr.requestedEnvironmentDepthMode, Is.EqualTo(EnvironmentDepthMode.Medium),
+                    "Balanced mode must use the Medium depth mode: the Fastest mode is the cheapest NSDK depth model and its low resolution is the main source of false occlusion and edge bleeding.");
                 Assert.That(nsdkOcc.enabled, Is.True);
                 Assert.That(controller.IsBypassUpdatesConfigured, Is.True);
                 Assert.That(nsdkOcc.OverrideOcclusionManagerSettings, Is.True);
@@ -85,7 +86,6 @@ namespace Vps.UnityClient.Tests.EditMode
                 Assert.That(occMgr.enabled, Is.True);
                 Assert.That(occMgr.requestedEnvironmentDepthMode, Is.EqualTo(EnvironmentDepthMode.Fastest));
                 Assert.That(nsdkOcc.enabled, Is.False);
-
                 // 3. Switch to HighQuality
                 controller.SetQualityMode(ArOcclusionQualityMode.HighQuality);
                 if (controller.IsStabilizationSupportedByGraphicsApi)
@@ -210,6 +210,199 @@ namespace Vps.UnityClient.Tests.EditMode
             {
                 Object.DestroyImmediate(mat);
                 Object.DestroyImmediate(hostGo);
+            }
+        }
+
+        [Test]
+        public void DepthFrameRateStaysWithinSdkRecommendedMaximum()
+        {
+            // NianticSpatial.NSDK.AR.Subsystems.Occlusion.NsdkOcclusionSubsystem.MaxRecommendedFrameRate == 20.
+            Assert.That(ArOcclusionController.BalancedTargetFrameRate, Is.EqualTo(20u),
+                "Balanced depth rate must reach the SDK recommended maximum, 14 Hz was visibly laggy.");
+            Assert.That(ArOcclusionController.HighQualityTargetFrameRate, Is.LessThanOrEqualTo(20u),
+                "The depth inference rate must never exceed the SDK recommended maximum.");
+        }
+
+        [Test]
+        public void DefaultRouteDepthBiasIsSmallEnoughToStayBelowLowObstacles()
+        {
+            Assert.That(ArOcclusionController.DefaultRouteDepthBiasMeters, Is.EqualTo(0.03f).Within(0.0001f),
+                "The route bias only has to beat floor depth noise. The previous 0.18 m value lifted the ribbon off the floor and let it punch through low obstacles.");
+        }
+
+        [Test]
+        public void RouteDepthBiasIsClampedToSafeRange()
+        {
+            var hostGo = new GameObject("NavigationHost");
+            try
+            {
+                var controller = hostGo.AddComponent<ArOcclusionController>();
+                controller.RouteDepthBiasMeters = 0.35f;
+                Assert.That(controller.RouteDepthBiasMeters, Is.EqualTo(0.15f).Within(0.0001f));
+
+                controller.RouteDepthBiasMeters = -1f;
+                Assert.That(controller.RouteDepthBiasMeters, Is.EqualTo(0f).Within(0.0001f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(hostGo);
+            }
+        }
+
+        [Test]
+        public void HighQualityFallsBackToBalancedWhenGraphicsApiCannotStabilize()
+        {
+            var originGo = new GameObject("XR Origin");
+            var camGo = new GameObject("AR Camera");
+            camGo.transform.SetParent(originGo.transform, false);
+            var hostGo = new GameObject("NavigationHost");
+
+            try
+            {
+                var xrOrigin = originGo.AddComponent<XROrigin>();
+                var camera = camGo.AddComponent<Camera>();
+                xrOrigin.Camera = camera;
+
+                var controller = hostGo.AddComponent<ArOcclusionController>();
+                controller.Initialize(camera, xrOrigin);
+
+                // Simulate a graphics API without stabilization support (the NSDK rejects Vulkan).
+                controller.SetStabilizationGraphicsApiSupportOverride(false);
+                controller.SetQualityMode(ArOcclusionQualityMode.HighQuality);
+
+                Assert.That(controller.EffectiveMode, Is.EqualTo(ArOcclusionQualityMode.Balanced));
+                Assert.That(controller.RequestedMode, Is.EqualTo(ArOcclusionQualityMode.HighQuality));
+                Assert.That(controller.FallbackReason, Is.Not.Empty,
+                    "A silent fallback must be reported so the UI can explain why HighQuality is not active.");
+                Assert.That(controller.FallbackReason, Does.Contain("Vulkan"));
+                Assert.That(controller.IsStabilizationConfigured, Is.False);
+            }
+            finally
+            {
+                Object.DestroyImmediate(hostGo);
+                Object.DestroyImmediate(originGo);
+            }
+        }
+
+        [Test]
+        public void HighQualityStaysActiveWhenGraphicsApiSupportsStabilization()
+        {
+            var originGo = new GameObject("XR Origin");
+            var camGo = new GameObject("AR Camera");
+            camGo.transform.SetParent(originGo.transform, false);
+            var hostGo = new GameObject("NavigationHost");
+
+            try
+            {
+                var xrOrigin = originGo.AddComponent<XROrigin>();
+                var camera = camGo.AddComponent<Camera>();
+                xrOrigin.Camera = camera;
+
+                var controller = hostGo.AddComponent<ArOcclusionController>();
+                controller.Initialize(camera, xrOrigin);
+                controller.SetStabilizationGraphicsApiSupportOverride(true);
+                controller.SetQualityMode(ArOcclusionQualityMode.HighQuality);
+
+                Assert.That(controller.EffectiveMode, Is.EqualTo(ArOcclusionQualityMode.HighQuality));
+                Assert.That(controller.FallbackReason, Is.Empty);
+                Assert.That(controller.IsStabilizationConfigured, Is.True);
+            }
+            finally
+            {
+                Object.DestroyImmediate(hostGo);
+                Object.DestroyImmediate(originGo);
+            }
+        }
+
+        [Test]
+        public void HumanSegmentationStaysDisabledAndOcclusionPrefersEnvironment()
+        {
+            var originGo = new GameObject("XR Origin");
+            var camGo = new GameObject("AR Camera");
+            camGo.transform.SetParent(originGo.transform, false);
+            var hostGo = new GameObject("NavigationHost");
+
+            try
+            {
+                var xrOrigin = originGo.AddComponent<XROrigin>();
+                var camera = camGo.AddComponent<Camera>();
+                xrOrigin.Camera = camera;
+
+                var controller = hostGo.AddComponent<ArOcclusionController>();
+                controller.Initialize(camera, xrOrigin);
+
+                var occMgr = camGo.GetComponent<AROcclusionManager>();
+                Assert.That(occMgr, Is.Not.Null);
+                Assert.That(occMgr.requestedHumanDepthMode, Is.EqualTo(HumanSegmentationDepthMode.Disabled));
+                Assert.That(occMgr.requestedHumanStencilMode, Is.EqualTo(HumanSegmentationStencilMode.Disabled));
+                Assert.That(occMgr.requestedOcclusionPreferenceMode, Is.EqualTo(OcclusionPreferenceMode.PreferEnvironmentOcclusion));
+            }
+            finally
+            {
+                Object.DestroyImmediate(hostGo);
+                Object.DestroyImmediate(originGo);
+            }
+        }
+
+        [Test]
+        public void OffModeDisablesOcclusionAndReportsDisabledDepthMode()
+        {
+            var originGo = new GameObject("XR Origin");
+            var camGo = new GameObject("AR Camera");
+            camGo.transform.SetParent(originGo.transform, false);
+            var hostGo = new GameObject("NavigationHost");
+
+            try
+            {
+                var xrOrigin = originGo.AddComponent<XROrigin>();
+                var camera = camGo.AddComponent<Camera>();
+                xrOrigin.Camera = camera;
+
+                var controller = hostGo.AddComponent<ArOcclusionController>();
+                controller.Initialize(camera, xrOrigin);
+                controller.SetQualityMode(ArOcclusionQualityMode.Off);
+
+                Assert.That(controller.EffectiveMode, Is.EqualTo(ArOcclusionQualityMode.Off));
+                Assert.That(controller.DepthModeName, Is.EqualTo("Disabled"));
+                Assert.That(controller.IsOcclusionActive, Is.False);
+            }
+            finally
+            {
+                Object.DestroyImmediate(hostGo);
+                Object.DestroyImmediate(originGo);
+            }
+        }
+
+        [Test]
+        public void DiagnosticsReportExposesGraphicsApiDepthModeAndOcclusionPlane()
+        {
+            var originGo = new GameObject("XR Origin");
+            var camGo = new GameObject("AR Camera");
+            camGo.transform.SetParent(originGo.transform, false);
+            var hostGo = new GameObject("NavigationHost");
+
+            try
+            {
+                var xrOrigin = originGo.AddComponent<XROrigin>();
+                var camera = camGo.AddComponent<Camera>();
+                xrOrigin.Camera = camera;
+
+                var controller = hostGo.AddComponent<ArOcclusionController>();
+                controller.Initialize(camera, xrOrigin);
+
+                string report = controller.DiagnosticsReport;
+                Assert.That(report, Is.Not.Empty);
+                Assert.That(report, Does.Contain("API"));
+                Assert.That(report, Does.Contain(SystemInfo.graphicsDeviceType.ToString()));
+                Assert.That(report, Does.Contain("Depth"));
+                Assert.That(report, Does.Contain("Plane"));
+                Assert.That(controller.GraphicsApiName, Does.Contain(SystemInfo.graphicsDeviceType.ToString()));
+                Assert.That(controller.DepthTargetFrameRate, Is.EqualTo(ArOcclusionController.BalancedTargetFrameRate));
+            }
+            finally
+            {
+                Object.DestroyImmediate(hostGo);
+                Object.DestroyImmediate(originGo);
             }
         }
     }

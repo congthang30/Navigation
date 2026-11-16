@@ -29,6 +29,12 @@ namespace Vps.UnityClient.Navigation
             Activity,
             Refresh,
             AlertCircle,
+            Plus,
+            Edit,
+            Trash,
+            Copy,
+            VolumeOn,
+            VolumeOff,
         }
 
         private const int IconSize = 64;
@@ -261,9 +267,87 @@ namespace Vps.UnityClient.Navigation
                     return Mathf.Min(ring, Mathf.Min(stem, dot));
                 }
 
+                case IconKind.Plus:
+                {
+                    float vBar = SdSegment(p, new Vector2(0f, -0.52f), new Vector2(0f, 0.52f)) - 0.09f;
+                    float hBar = SdSegment(p, new Vector2(-0.52f, 0f), new Vector2(0.52f, 0f)) - 0.09f;
+                    return Mathf.Min(vBar, hBar);
+                }
+
+                case IconKind.Edit:
+                {
+                    float shaft = SdSegment(p, new Vector2(-0.36f, -0.36f), new Vector2(0.46f, 0.46f)) - 0.11f;
+                    float tip = SdTriangle(
+                        p,
+                        new Vector2(-0.58f, -0.58f),
+                        new Vector2(-0.46f, -0.22f),
+                        new Vector2(-0.22f, -0.46f)) - 0.02f;
+                    float baseLine = SdSegment(p, new Vector2(-0.18f, -0.60f), new Vector2(0.58f, -0.60f)) - 0.065f;
+                    return Mathf.Min(Mathf.Min(shaft, tip), baseLine);
+                }
+
+                case IconKind.Trash:
+                {
+                    float lid = SdSegment(p, new Vector2(-0.52f, 0.42f), new Vector2(0.52f, 0.42f)) - 0.07f;
+                    float handle = SdSegment(p, new Vector2(-0.18f, 0.56f), new Vector2(0.18f, 0.56f)) - 0.065f;
+                    float outer = SdRoundedBox(p - new Vector2(0f, -0.14f), new Vector2(0.38f, 0.46f), 0.08f);
+                    float inner = SdRoundedBox(p - new Vector2(0f, -0.12f), new Vector2(0.24f, 0.34f), 0.04f);
+                    float bin = Mathf.Max(outer, -inner);
+                    float barL = SdSegment(p, new Vector2(-0.10f, -0.30f), new Vector2(-0.10f, 0.06f)) - 0.055f;
+                    float barR = SdSegment(p, new Vector2(0.10f, -0.30f), new Vector2(0.10f, 0.06f)) - 0.055f;
+                    return Mathf.Min(Mathf.Min(lid, handle), Mathf.Min(bin, Mathf.Min(barL, barR)));
+                }
+
+                case IconKind.Copy:
+                {
+                    float frontOuter = SdRoundedBox(p - new Vector2(-0.14f, -0.14f), new Vector2(0.38f, 0.44f), 0.09f);
+                    float frontInner = SdRoundedBox(p - new Vector2(-0.14f, -0.14f), new Vector2(0.24f, 0.30f), 0.04f);
+                    float front = Mathf.Max(frontOuter, -frontInner);
+                    float backTop = SdSegment(p, new Vector2(-0.18f, 0.58f), new Vector2(0.46f, 0.58f)) - 0.065f;
+                    float backRight = SdSegment(p, new Vector2(0.46f, 0.58f), new Vector2(0.46f, -0.18f)) - 0.065f;
+                    return Mathf.Min(front, Mathf.Min(backTop, backRight));
+                }
+
+                case IconKind.VolumeOn:
+                {
+                    float speaker = SpeakerBody(p);
+                    float arcOriginX = 0.02f;
+                    float waveInner = (p.x > 0.16f)
+                        ? SdRing(p, new Vector2(arcOriginX, 0f), 0.30f, 0.06f)
+                        : 1f;
+                    float waveOuter = (p.x > 0.24f)
+                        ? SdRing(p, new Vector2(arcOriginX, 0f), 0.54f, 0.06f)
+                        : 1f;
+                    return Mathf.Min(speaker, Mathf.Min(waveInner, waveOuter));
+                }
+
+                case IconKind.VolumeOff:
+                {
+                    float speaker = SpeakerBody(p);
+                    float x1 = SdSegment(p, new Vector2(0.24f, 0.24f), new Vector2(0.62f, -0.24f)) - 0.065f;
+                    float x2 = SdSegment(p, new Vector2(0.24f, -0.24f), new Vector2(0.62f, 0.24f)) - 0.065f;
+                    return Mathf.Min(speaker, Mathf.Min(x1, x2));
+                }
+
                 default:
                     return SdCircle(p, Vector2.zero, 0.5f);
             }
+        }
+
+        private static float SpeakerBody(Vector2 p)
+        {
+            float body = SdRoundedBox(p - new Vector2(-0.42f, 0f), new Vector2(0.18f, 0.20f), 0.05f);
+            float cone = SdTriangle(
+                p,
+                new Vector2(-0.32f, 0.18f),
+                new Vector2(0.06f, 0.50f),
+                new Vector2(0.06f, -0.50f));
+            float coneBottom = SdTriangle(
+                p,
+                new Vector2(-0.32f, 0.18f),
+                new Vector2(0.06f, -0.50f),
+                new Vector2(-0.32f, -0.18f));
+            return Mathf.Min(body, Mathf.Min(cone, coneBottom));
         }
 
         private static float SliderRow(Vector2 p, float y, float knobX)
